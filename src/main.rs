@@ -2823,12 +2823,17 @@ fn fitectl_scoreboard(server: &IrcServer, conn: &Connection, chan: &String, quie
 		Err(err) => { println!("{}", err); return; },
 	}
 
-	let mut outString: String = "<html><head><title>#fite Scoreboard</title></head><body><table>
-<tr><td>Nick</td><td>Level</td><td>HitPoints</td><td>Weapon</td><td>Armor</td></tr>\n".to_string();
+	let mut outString: String = "<html><head><link rel='stylesheet' type='text/css' href='fite.css'><title>#fite Scoreboard</title></head><body><table>
+<tr id='header'><td>Nick</td><td>Level</td><td>HitPoints</td><td>Weapon</td><td>Armor</td></tr>\n".to_string();
 
 	for row in allrows {
 		let mrow = row.unwrap();
-		let msg = format!("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n", mrow.nick, mrow.lvl, mrow.hp, mrow.w, mrow.a);
+		if mrow.hp == 0
+			let hedead = " class='hedead'";
+		else
+			let hedead = "";
+		
+		let msg = format!("<tr{}><td>{}</td><td class='no'>{}</td><td class='hp'>{}</td><td>{}</td><td>{}</td></tr>\n", hedead, mrow.nick, mrow.lvl, mrow.hp, mrow.w, mrow.a);
 		outString.push_str(&msg.as_str());
 	}
 	outString.push_str("</table></body></html>");

@@ -1,0 +1,15 @@
+body {background: #333; color: #ccc}
+table {border: solid 2px #686; margin:auto; border-collapse:collapse; background: #222}
+td {padding-left: .4em; padding-right:.4em}
+#header {background: #686; color:#fff}
+#header td {margin:0}
+
+/* Right-align los numeros */
+.no {text-align: right}
+
+/* HP column highlight */
+.hp {background: #686; color: #fff; text-align:right}
+
+/* Dead row highlight */
+.hedead {background: #433; font-style: italic}
+.hedead .hp {background: #866; color: #fff}
