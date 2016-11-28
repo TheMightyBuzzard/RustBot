@@ -2828,12 +2828,15 @@ fn fitectl_scoreboard(server: &IrcServer, conn: &Connection, chan: &String, quie
 
 	for row in allrows {
 		let mrow = row.unwrap();
-		if mrow.hp == 0
-			let hedead = " class='hedead'";
-		else
-			let hedead = "";
+		let headed;
+		if mrow.hp == 0 {
+			headed = " class='hedead'";
+		}
+		else {
+			headed = "";
+		}
 		
-		let msg = format!("<tr{}><td>{}</td><td class='no'>{}</td><td class='hp'>{}</td><td>{}</td><td>{}</td></tr>\n", hedead, mrow.nick, mrow.lvl, mrow.hp, mrow.w, mrow.a);
+		let msg = format!("<tr{}><td>{}</td><td class='no'>{}</td><td class='hp'>{}</td><td>{}</td><td>{}</td></tr>\n", headed, mrow.nick, mrow.lvl, mrow.hp, mrow.w, mrow.a);
 		outString.push_str(&msg.as_str());
 	}
 	outString.push_str("</table></body></html>");
