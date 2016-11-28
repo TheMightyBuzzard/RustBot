@@ -2823,7 +2823,7 @@ fn fitectl_scoreboard(server: &IrcServer, conn: &Connection, chan: &String, quie
 		Err(err) => { println!("{}", err); return; },
 	}
 
-	let mut outString: String = "<html><head><link rel='stylesheet' type='text/css' href='fite.css'><title>#fite Scoreboard</title></head><body><table>
+	let mut outString: String = "<html><head><link rel='stylesheet' type='text/css' href='/css/fite.css'><title>#fite Scoreboard</title></head><body><table>
 <tr id='header'><td>Nick</td><td>Level</td><td>HitPoints</td><td>Weapon</td><td>Armor</td></tr>\n".to_string();
 
 	for row in allrows {
