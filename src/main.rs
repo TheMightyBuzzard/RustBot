@@ -2713,9 +2713,6 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		msgDelay += 1000_u64;
 	}
 	
-	// Save characters
-	//save_character(&conn, &rAttacker);
-	//save_character(&conn, &rDefender);
 	// Send a timer to the timer handling thread with msgDelay + 100 delay so it fires just after the last
 	let timer = Timer {
 		delay: msgDelay + 1100_u64,
@@ -2724,6 +2721,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		},
 	};
 	timertx.send(timer);
+	// Save characters AFTER display of the last message
 	let cAttacker = rAttacker.clone();
 	let cDefender = rDefender.clone();
 	let saveTimer = Timer {
@@ -2900,8 +2898,15 @@ fn fitectl_weapon(server: &IrcServer, conn: &Connection, chan: &String, nick: &S
 	if !character_exists(&conn, &nick) {
 		create_character(&conn, &nick);
 	}
-	conn.execute("UPDATE characters SET weapon = ? WHERE nick = ?", &[&weapon.as_str(), &nick.as_str()]).unwrap();
-	let msg = format!("#fite weapon for {} set to {}.", &nick, &weapon);
+	let saveWeapon;
+	if weapon.contains("<") || weapon.contains(">") {
+		saveWeapon = "micro-penis".to_string();
+	}
+	else {
+		saveWeapon = weapon;
+	}
+	conn.execute("UPDATE characters SET weapon = ? WHERE nick = ?", &[&saveWeapon.as_str(), &nick.as_str()]).unwrap();
+	let msg = format!("#fite weapon for {} set to {}.", &nick, &saveWeapon);
 	server.send_privmsg(&chan, &msg);
 }
 
@@ -2909,7 +2914,14 @@ fn fitectl_armor(server: &IrcServer, conn: &Connection, chan: &String, nick: &St
 	if !character_exists(&conn, &nick) {
 		create_character(&conn, &nick);
 	}
-	conn.execute("UPDATE characters SET armor = ? WHERE nick = ?", &[&armor.as_str(), &nick.as_str()]).unwrap();
-	let msg = format!("#fite armor for {} set to {}.", &nick, &armor);
+	let saveArmor;
+	if armor.contains("<") || armor.contains(">") {
+		saveArmor = "frilly lace panties".to_string();
+	}
+	else {
+		saveArmor = armor;
+	}
+	conn.execute("UPDATE characters SET armor = ? WHERE nick = ?", &[&saveArmor.as_str(), &nick.as_str()]).unwrap();
+	let msg = format!("#fite armor for {} set to {}.", &nick, &saveArmor);
 	server.send_privmsg(&chan, &msg);
 }
