@@ -2418,6 +2418,7 @@ fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, conn: &Connectio
 		&TimerTypes::Savechars { ref attacker, ref defender } => {
 			save_character(&conn, &attacker);
 			save_character(&conn, &defender);
+			fitectl_scoreboard(&server, &conn, &"null".to_string(), true);
 			return 0_u64;
 		},
 		_ => {return 0_u64;},
@@ -2726,25 +2727,25 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		msgDelay += 1000_u64;
 	}
 	
-	// Send a timer to the timer handling thread with msgDelay + 100 delay so it fires just after the last
-	let timer = Timer {
-		delay: msgDelay + 1100_u64,
-		action: TimerTypes::Sendping {
-			doping: true,
-		},
-	};
-	timertx.send(timer);
 	// Save characters AFTER display of the last message
 	let cAttacker = rAttacker.clone();
 	let cDefender = rDefender.clone();
 	let saveTimer = Timer {
-		delay: msgDelay + 1100_u64,
+		delay: msgDelay + 100_u64,
 		action: TimerTypes::Savechars {
 			attacker: cAttacker,
 			defender: cDefender,
 		},
 	};
 	timertx.send(saveTimer);
+	// Send a timer to the timer handling thread with msgDelay + 100 delay so it fires just after the last
+        let timer = Timer {
+                delay: msgDelay + 1100_u64,
+                action: TimerTypes::Sendping {
+                        doping: true,
+                },
+        };
+        timertx.send(timer);
 	return true;
 }
 
