@@ -2516,6 +2516,19 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 	let aarmor = format!("{}{}{}", &itallic, &rAttacker.armor, &clearall);
 	let darmor = format!("{}{}{}", &itallic, &rDefender.armor, &clearall);
 
+	let speeditup;
+	if rDefender.level > 99 && rAttacker.level > 99 {
+		if rDefender.level < rAttacker.level {
+			speeditup = (rDefender.level / 50) as u8;
+		}
+		else {
+			speeditup = (rAttacker.level / 50) as u8;
+		}	
+	}
+	else {
+		speeditup = 1_u8;
+	}
+
 	// Do combat rounds until someone dies
 	loop {
 		// whoever won init's turn
@@ -2536,7 +2549,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		}
 		// Crit
 		else if attackRoll == 20_u8 {
-			damageRoll = roll_dmg() * 2;
+			damageRoll = roll_dmg() * 2 * speeditup;
 			let msg = format!("{}{} smites the everlovin crap out of {} with a {} ({}04{}{})", &clearall, &anick, &dnick, &aweapon, &color, damageRoll, &color);
 			if damageRoll as u64 > rDefender.hp {
 				damageRoll = rDefender.hp as u8;
@@ -2553,7 +2566,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		}
 		// Hit
 		else if attackRoll > ARMOR_CLASS {
-			damageRoll = roll_dmg();
+			damageRoll = roll_dmg() * speeditup;
 			let msg = format!("{}{} clobbers {} upside their head with a {} ({}14{}{})", &clearall, &anick, &dnick, &aweapon, &color, damageRoll, &color);
 			if damageRoll as u64 > rDefender.hp {
 				damageRoll = rDefender.hp as u8;
@@ -2634,7 +2647,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		}
 		// Crit
 		else if attackRoll == 20_u8 {
-			damageRoll = roll_dmg() * 2;
+			damageRoll = roll_dmg() * 2 * speeditup;
 			let msg = format!("{}{} smites the everlovin crap out of {} with a {} ({}04{}{})", &clearall, &dnick, &anick, &dweapon, &color, damageRoll, &color);
 			if damageRoll as u64 > rAttacker.hp {
 				damageRoll = rAttacker.hp as u8;
@@ -2651,7 +2664,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		}
 		// Hit
 		else if attackRoll > ARMOR_CLASS {
-			damageRoll = roll_dmg();
+			damageRoll = roll_dmg() * speeditup;
 			let msg = format!("{}{} clobbers {} upside their head with a {} ({}14{}{})", &clearall, &dnick, &anick, &dweapon, &color, damageRoll, &color);
 			if damageRoll as u64 > rAttacker.hp {
 				damageRoll = rAttacker.hp as u8;
