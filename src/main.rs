@@ -90,7 +90,7 @@ struct Submission {
 	botnick: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Character {
 	nick: String,
 	level: u64,
@@ -110,6 +110,7 @@ enum TimerTypes {
 	Feedback { command: String },
 	Sendping { doping: bool },
 	Once { command: String },
+	Savechars { attacker: Character, defender: Character },
 }
 
 #[derive(Debug)]
@@ -2414,6 +2415,11 @@ fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, conn: &Connectio
 			server.send(Message{tags: None, prefix: None, command: Command::PING("irc.soylentnews.org".to_string(), None)});
 			return 0_u64;
 		},
+		&TimerTypes::Savechars { ref attacker, ref defender } => {
+			save_character(&conn, &attacker);
+			save_character(&conn, &defender);
+			return 0_u64;
+		},
 		_ => {return 0_u64;},
 	};
 }
@@ -2708,8 +2714,8 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 	}
 	
 	// Save characters
-	save_character(&conn, &rAttacker);
-	save_character(&conn, &rDefender);
+	//save_character(&conn, &rAttacker);
+	//save_character(&conn, &rDefender);
 	// Send a timer to the timer handling thread with msgDelay + 100 delay so it fires just after the last
 	let timer = Timer {
 		delay: msgDelay + 1100_u64,
@@ -2718,6 +2724,16 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		},
 	};
 	timertx.send(timer);
+	let cAttacker = rAttacker.clone();
+	let cDefender = rDefender.clone();
+	let saveTimer = Timer {
+		delay: msgDelay + 1100_u64,
+		action: TimerTypes::Savechars {
+			attacker: cAttacker,
+			defender: cDefender,
+		},
+	};
+	timertx.send(saveTimer);
 	return true;
 }
 
