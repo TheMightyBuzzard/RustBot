@@ -2899,7 +2899,7 @@ fn fitectl_weapon(server: &IrcServer, conn: &Connection, chan: &String, nick: &S
 		create_character(&conn, &nick);
 	}
 	let saveWeapon;
-	if weapon.contains("<") || weapon.contains(">") {
+	if weapon.contains("<") || weapon.contains(">") || weapon.len() > 32 {
 		saveWeapon = "micro-penis".to_string();
 	}
 	else {
@@ -2915,7 +2915,7 @@ fn fitectl_armor(server: &IrcServer, conn: &Connection, chan: &String, nick: &St
 		create_character(&conn, &nick);
 	}
 	let saveArmor;
-	if armor.contains("<") || armor.contains(">") {
+	if armor.contains("<") || armor.contains(">") || armor.len() > 32 {
 		saveArmor = "frilly lace panties".to_string();
 	}
 	else {
