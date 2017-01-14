@@ -2548,7 +2548,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		}
 		// Crit
 		else if attackRoll == 20_u8 {
-			for _ in 1..speeditup {
+			for _ in 0..speeditup {
 				damageRoll += roll_dmg() * 2;
 			}
 			let msg = format!("{}{} smites the everlovin crap out of {} with a {} ({}04{}{})", &clearall, &anick, &dnick, &aweapon, &color, damageRoll, &color);
@@ -2567,7 +2567,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		}
 		// Hit
 		else if attackRoll > ARMOR_CLASS {
-			for _ in 1..speeditup {
+			for _ in 0..speeditup {
 				damageRoll += roll_dmg();
 			}
 			let msg = format!("{}{} clobbers {} upside their head with a {} ({}14{}{})", &clearall, &anick, &dnick, &aweapon, &color, damageRoll, &color);
@@ -2650,7 +2650,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		}
 		// Crit
 		else if attackRoll == 20_u8 {
-			for _ in 1..speeditup {
+			for _ in 0..speeditup {
 				damageRoll += roll_dmg() * 2;
 			}
 			let msg = format!("{}{} smites the everlovin crap out of {} with a {} ({}04{}{})", &clearall, &dnick, &anick, &dweapon, &color, damageRoll, &color);
@@ -2669,7 +2669,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		}
 		// Hit
 		else if attackRoll > ARMOR_CLASS {
-			for _ in 1..speeditup {
+			for _ in 0..speeditup {
 				damageRoll += roll_dmg();
 			}
 			let msg = format!("{}{} clobbers {} upside their head with a {} ({}14{}{})", &clearall, &dnick, &anick, &dweapon, &color, damageRoll, &color);
