@@ -2445,7 +2445,7 @@ fn get_recurring_timers(conn: &Connection) -> Vec<TimerTypes> {
 fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfig: &BotConfig, chan: &String, attacker: &String, target: &String) -> bool {
 	let spamChan = "#fite".to_string();
 	let mut msgDelay = 0_u64;
-	let msg = format!("{}fite spam going to channel {}", &botconfig.prefix, &spamChan);
+	let msg = format!("{}fite all {}fite messages except this now go to channel {}, and this one will be removed soon.", &botconfig.prefix, &botconfig.prefix, &spamChan);
 	server.send_privmsg(&chan, &msg);
 	let mut oAttacker: Character = get_character(&conn, &attacker);
 	let mut oDefender: Character = get_character(&conn, &target);
@@ -2459,12 +2459,12 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 	// Make sure both characters are currently alive
 	if !is_alive(&oAttacker) {
 		let err = format!("#fite How can you fight when you're dead? Try again tomorrow.");
-		server.send_privmsg(&chan, &err);
+		server.send_privmsg(&spamChan, &err);
 		return false;
 	}
 	if !is_alive(&oDefender) {
 		let err = format!("#fite {}'s corpse is currently rotting on the ground. Try fighting someone who's alive.", &target);
-		server.send_privmsg(&chan, &err);
+		server.send_privmsg(&spamChan, &err);
 		return false;
 	}
 
@@ -2621,7 +2621,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 			let sendme: Timer = Timer {
 				delay: msgDelay + 1000_u64,
 				action: TimerTypes::Message{
-						chan: chan.clone(),
+						chan: spamChan.clone(),
 						msg: deathmsg,
 				},
 			};
@@ -2723,7 +2723,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 			let sendme: Timer = Timer {
 				delay: msgDelay + 1000_u64,
 				action: TimerTypes::Message{
-						chan: chan.clone(),
+						chan: spamChan.clone(),
 						msg: deathmsg,
 				},
 			};
