@@ -199,11 +199,13 @@ fn main() {
 					username: Some(botconfig.nick.clone()),
 					realname: Some(botconfig.nick.clone()),
 					server: Some(botconfig.server.clone()),
-					port: Some(6697),
+					port: Some(6667),
 					password: Some(botconfig.snpass.clone()),
-					use_ssl: Some(true),
+					use_ssl: Some(false),
 					encoding: Some("UTF-8".to_string()),
 					//channels: Some(vec!(botconfig.channel.clone())),
+					version: None,
+					source: None,
 					channels: Some(vChannels),
 					channel_keys: None,
 					umodes: Some("+Zix".to_string()),
@@ -727,6 +729,10 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 		if botconfig.is_fighting {
 			let msg = format!("There's already a fight going on. Wait your turn.");
 			server.send_privmsg(&chan, &msg);
+			return;
+		}
+		if &chan[..] != "#fite" {
+			server.send_privmsg(&chan, "#fite restricted to the channel #fite");
 			return;
 		}
 		botconfig.is_fighting = true;
@@ -2445,8 +2451,6 @@ fn get_recurring_timers(conn: &Connection) -> Vec<TimerTypes> {
 fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfig: &BotConfig, chan: &String, attacker: &String, target: &String) -> bool {
 	let spamChan = "#fite".to_string();
 	let mut msgDelay = 0_u64;
-	let msg = format!("{}fite all {}fite messages except this now go to channel {}, and this one will be removed soon.", &botconfig.prefix, &botconfig.prefix, &spamChan);
-	server.send_privmsg(&chan, &msg);
 	let mut oAttacker: Character = get_character(&conn, &attacker);
 	let mut oDefender: Character = get_character(&conn, &target);
 	let mut rng = rand::thread_rng();
@@ -2516,12 +2520,12 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 	let darmor = format!("{}{}{}", &itallic, &rDefender.armor, &clearall);
 
 	let speeditup;
-	if rDefender.level > 99 && rAttacker.level > 99 {
+	if rDefender.level > 49 && rAttacker.level > 49 {
 		if rDefender.level < rAttacker.level {
-			speeditup = (rDefender.level / 50) as u8;
+			speeditup = (rDefender.level / 25) as u8;
 		}
 		else {
-			speeditup = (rAttacker.level / 50) as u8;
+			speeditup = (rAttacker.level / 25) as u8;
 		}	
 	}
 	else {
@@ -2549,8 +2553,9 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		// Crit
 		else if attackRoll == 20_u8 {
 			for _ in 0..speeditup {
-				damageRoll += roll_dmg() * 2;
+				damageRoll += roll_dmg();
 			}
+			damageRoll = damageRoll * 2;
 			let msg = format!("{}{} smites the everlovin crap out of {} with a {} ({}04{}{})", &clearall, &anick, &dnick, &aweapon, &color, damageRoll, &color);
 			if damageRoll as u64 > rDefender.hp {
 				damageRoll = rDefender.hp as u8;
@@ -2651,8 +2656,9 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 		// Crit
 		else if attackRoll == 20_u8 {
 			for _ in 0..speeditup {
-				damageRoll += roll_dmg() * 2;
+				damageRoll += roll_dmg();
 			}
+			damageRoll = damageRoll * 2;
 			let msg = format!("{}{} smites the everlovin crap out of {} with a {} ({}04{}{})", &clearall, &dnick, &anick, &dweapon, &color, damageRoll, &color);
 			if damageRoll as u64 > rAttacker.hp {
 				damageRoll = rAttacker.hp as u8;
@@ -2770,11 +2776,11 @@ fn roll_once(sides: u8) -> u8 {
 }
 
 fn roll_dmg() -> u8 {
-	let mut roll = roll_once(8_u8);
+	let mut roll = roll_once(6_u8);
 	let mut total = 0_u8;
 	total += roll;
-	while roll == 8 {
-		roll = roll_once(8_u8);
+	while roll == 6 {
+		roll = roll_once(6_u8);
 		total += roll;
 	}
 	let total = total;
