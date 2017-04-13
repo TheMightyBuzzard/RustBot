@@ -1,8 +1,3 @@
-#![allow(unused_mut)]
-#![allow(unused_must_use)]
-#![allow(unused_variables)]
-#![allow(dead_code)]
-#![allow(unused_assignments)]
 #![allow(non_snake_case)]
 extern crate curl;
 extern crate irc;
@@ -11,30 +6,20 @@ extern crate rustc_serialize;
 extern crate regex;
 extern crate time;
 extern crate rand;
-extern crate rss;
-extern crate atom_syndication;
 
-use std::env;
-use std::thread;
+use std::{env, thread, str};
 use std::process::exit;
-use std::str;
-use std::fs::File;
-use std::io::BufReader;
-use std::io::BufRead;
-use std::io::Write;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, BufRead, Write};
 use std::sync::mpsc::Sender;
 use std::sync::mpsc;
 use std::time::Duration;
-use std::i64;
 use regex::Regex;
 use curl::easy::{Easy, List};
 use irc::client::prelude::*;
 use rustc_serialize::json::Json;
 use rusqlite::Connection;
 use rand::Rng;
-use rss::Rss;
-use atom_syndication::Feed;
 
 #[derive(Debug)]
 struct BotConfig {
@@ -226,7 +211,7 @@ fn main() {
 	let recurringTimers: Vec<TimerTypes> = get_recurring_timers(&conn);
 
 	storables.server.identify().unwrap();
-	conn.close();
+	let _ = conn.close();
 
 	// Feedback channel that any thread can write to?
 	let (feedbacktx, feedbackrx) = mpsc::channel::<Timer>();
@@ -235,7 +220,7 @@ fn main() {
 	let (subtx, subrx) = mpsc::channel::<Submission>();
 	{	
 		let server = storables.server.clone();
-		let substhread = thread::spawn(move || {
+		let _ = thread::spawn(move || {
 			loop {
 				for submission in subrx.recv() {
 					if DEBUG {
@@ -244,10 +229,10 @@ fn main() {
 					thread::sleep(Duration::new(25,0));
 					let chan = submission.chan.clone();
 					if send_submission(&submission) {
-						server.send_privmsg(&chan, "Submission successful. https://soylentnews.org/submit.pl?op=list");
+						let _ = server.send_privmsg(&chan, "Submission successful. https://soylentnews.org/submit.pl?op=list");
 					}
 					else {
-						server.send_privmsg(&chan, "Something borked during submitting, check the logs.");
+						let _ = server.send_privmsg(&chan, "Something borked during submitting, check the logs.");
 					}
 				}
 			}
@@ -258,10 +243,9 @@ fn main() {
 	let (timertx, timerrx) = mpsc::channel::<Timer>();
 	{
 		let server = storables.server.clone();
-		let timerthread = thread::spawn(move || {
+		let _ = thread::spawn(move || {
 			let mut qTimers: Vec<Timer> = Vec::new();
 			for timer in recurringTimers {
-				let mut pushme: Timer;
 				match timer {
 					TimerTypes::Recurring { ref every, ref command } => {
 						let pushme = Timer {
@@ -281,7 +265,7 @@ fn main() {
 			loop {
 				match timerrx.try_recv() {
 					Err(_) => { },
-					Ok(mut timer) => {
+					Ok(timer) => {
 						if DEBUG {
 							println!("{:?}", timer);
 						}
@@ -319,7 +303,7 @@ fn main() {
 			command: "goodfairy".to_string(),
 		}
 	};
-	timertx.send(tGoodfairy);
+	let _ = timertx.send(tGoodfairy);
 
 	for message in storables.server.iter() {
 		let umessage = message.unwrap();
@@ -436,7 +420,7 @@ fn process_action(storables: &Storables, nick: &String, channel: &String, said: 
 	let action: String = csaid[prefixlen..end].to_string();
 	if action == "yawns" {
 		let flip = format!("flips a Skittle into {}'s gaping mouth", nick);
-		server.send_action( channel, &flip );
+		let _ = server.send_action( channel, &flip );
 	}
 }
 
@@ -645,7 +629,7 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 			command_help(&server, &botconfig, &chan, Some("socialist".to_string()));
 			return;
 		}
-		server.send_privmsg(&chan, format!("{}, you're a socialist!", &noprefix["socialist ".len()..].trim()).as_str());
+		let _ = server.send_privmsg(&chan, format!("{}, you're a socialist!", &noprefix["socialist ".len()..].trim()).as_str());
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "roll", true) || cmd_check(&noprefixbytes, "roll ", false) {
@@ -658,7 +642,7 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "bnk", true) {
-		server.send_privmsg(&chan, "https://www.youtube.com/watch?v=9upTLWRZTfw");
+		let _ = server.send_privmsg(&chan, "https://www.youtube.com/watch?v=9upTLWRZTfw");
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "part", true) || cmd_check(&noprefixbytes, "part ", false) {
@@ -728,20 +712,20 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 		}
 		if botconfig.is_fighting {
 			let msg = format!("There's already a fight going on. Wait your turn.");
-			server.send_privmsg(&chan, &msg);
+			let _ = server.send_privmsg(&chan, &msg);
 			return;
 		}
 		if &chan[..] != "#fite" {
-			server.send_privmsg(&chan, "#fite restricted to the channel #fite");
+			let _ = server.send_privmsg(&chan, "#fite restricted to the channel #fite");
 			return;
 		}
 		botconfig.is_fighting = true;
 		let target = noprefix["fite ".len()..].trim().to_string();
-		let stop = command_fite(&server, &timertx, &conn, &botconfig, &chan, &nick, target);
+		let stop = command_fite(&server, &timertx, &conn, &chan, &nick, target);
 		// Stop fighting if we didn't actually have a fite
 		botconfig.is_fighting = stop;
 		if stop {
-			fitectl_scoreboard(&server, &conn, &chan, true);
+			fitectl_scoreboard(&server, &conn, true);
 		}
 		return;
 	}
@@ -752,7 +736,7 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 		}
 		if botconfig.is_fighting {
 			let msg = format!("There's a fight going on. You'll have to wait.");
-			server.send_privmsg(&chan, &msg);
+			let _ = server.send_privmsg(&chan, &msg);
 			return;
 		}
 		let args = noprefix["fitectl ".len()..].trim().to_string();
@@ -783,12 +767,12 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 			return;
 		}
 		let sammich = noprefix["sammichadd ".len()..].trim().to_string();
-		command_sammichadd(&server, &botconfig, &conn, &chan, sammich);
+		command_sammichadd(&server, &conn, &chan, sammich);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "sammich", true) || cmd_check(&noprefixbytes, "sammich ", false) {
 		if noprefix.as_str() == "sammich" {
-			command_sammich(&server, &botconfig, &conn, &chan, &nick);
+			command_sammich(&server, &conn, &chan, &nick);
 		}
 		else {
 			command_sammich_alt(&server, &chan, &noprefix["sammich ".len()..].trim().to_string());
@@ -804,19 +788,6 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 			let target = noprefix["nelson ".len()..].trim().to_string();
 			let message = format!("{}: HA HA!", &target);
 			command_say(&server, chan.to_string(), message);
-		}
-		return;
-	}
-	else if cmd_check(&noprefixbytes, "feedadd", true) || cmd_check(&noprefixbytes, "feedadd ", false) {
-		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
-			return;
-		}
-		if noprefix.as_str() == "feedadd" {
-			command_help(&server, &botconfig, &chan, Some("feedadd".to_string()));
-		}
-		else {
-			let feed_url = noprefix[7..].to_string().trim().to_string();
-			command_feedadd(&server, &botconfig, &conn, &chan, feed_url);
 		}
 		return;
 	}
@@ -841,7 +812,7 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 			return;
 		}
                 let what = noprefix["weatheralias ".len()..].trim().to_string();
-                command_weather_alias(&botconfig, &server, &conn, &nick, &chan, what);
+                command_weather_alias(&botconfig, &server, &conn, &chan, what);
 		return;
         }
 }
@@ -849,7 +820,7 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 fn command_fitectl(server: &IrcServer, conn: &Connection, chan: &String, nick: &String, args: String) {
 	let argsbytes = args.as_bytes();
 	if args.len() == 10 && &argsbytes[..] == "scoreboard".as_bytes() {
-		fitectl_scoreboard(&server, &conn, &chan, false);
+		fitectl_scoreboard(&server, &conn, false);
 	}
 	else if args.len() > 7 && &argsbytes[..6] == "armor ".as_bytes() {
 		let armor = args[5..].trim().to_string();
@@ -870,16 +841,16 @@ fn command_goodfairy(server: &IrcServer, conn: &Connection, chan: &String) {
 		row.get(0)
 	}).unwrap();
 	conn.execute("UPDATE characters SET hp = level + 100 WHERE nick = ?", &[&lucky]).unwrap();
-	server.send_privmsg(&chan, "#fite The good fairy has come along and revived everyone");
-	server.send_privmsg(&chan, format!("#fite the gods have smiled upon {}", &lucky).as_str() );
-	fitectl_scoreboard(&server, &conn, &chan, true);
+	let _ = server.send_privmsg(&chan, "#fite The good fairy has come along and revived everyone");
+	let _ = server.send_privmsg(&chan, format!("#fite the gods have smiled upon {}", &lucky).as_str() );
+	fitectl_scoreboard(&server, &conn, true);
 }
 
-fn command_fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfig: &BotConfig, chan: &String, attacker: &String, target: String) -> bool {
+fn command_fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, chan: &String, attacker: &String, target: String) -> bool {
 	let blocklist = vec!["boru", "stderr"];
 	for checknick in blocklist.iter() {
 		if **checknick == *target.as_str() {
-			server.send_privmsg(&chan, "#fite I'm sorry, Dave, I can't do that.");
+			let _ = server.send_privmsg(&chan, "#fite I'm sorry, Dave, I can't do that.");
 			return false;
 		}
 	}
@@ -887,7 +858,7 @@ fn command_fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, 
 		if !sql_table_check(&conn, "characters".to_string()) {
 			println!("`characters` table not found, creating...");
 			if !sql_table_create(&conn, "characters".to_string()) {
-				server.send_privmsg(&chan, "No characters table exists and for some reason I cannot create one");
+				let _ = server.send_privmsg(&chan, "No characters table exists and for some reason I cannot create one");
 				return false;
 			}
 		}
@@ -898,51 +869,21 @@ fn command_fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, 
 			create_character(&conn, &target);
 		}
 
-		let returnme = fite(&server, &timertx, &conn, &botconfig, &chan, &attacker, &target);
+		let returnme = fite(&server, &timertx, &conn, &attacker, &target);
 		return returnme;
 	}
 	else {
 		let err = format!("#fite looks around but doesn't see {}", &target);
-		server.send_action(&chan, &err);
+		let _ = server.send_action(&chan, &err);
 		return false;
 	}
 }
 
-fn command_feedadd(server: &IrcServer, botconfig: &BotConfig, conn: &Connection, chan: &String, feed_url: String) {
-	if !sql_table_check(&conn, "feeds".to_string()) {
-		println!("`feeds` table not found, creating...");
-		if !sql_table_create(&conn, "feeds".to_string()) {
-			server.send_privmsg(&chan, "No feeds table exists and for some reason I cannot create one");
-			return;
-		}
-	}
-
-	let raw_feed = get_raw_feed(&feed_url);
-	let feed_title = get_feed_title(&raw_feed);
-	if &feed_title[..] == "Unknown feed type" {
-		server.send_privmsg(&chan, "Unknown feed type. RSS v1.0 maybe?");
-		return;
-	}
-	
-	match conn.execute("INSERT INTO feeds (title, address, frequency, lastchecked) VALUES($1, $2, 15, datetime('now', '-16 minutes'))", &[&feed_title, &feed_url]) {
-		Err(err) => {
-			println!("{}", err);
-			server.send_privmsg(&chan, "Error writing to feeds table.");
-			return;
-		},
-		Ok(_) => {
-			let sayme: String = format!("\"{}\" added.", feed_url);
-			server.send_privmsg(&chan, &sayme);
-			return;
-		},
-	};
-}
-
-fn command_sammichadd(server: &IrcServer, botconfig: &BotConfig, conn: &Connection, chan: &String, sammich: String) {
+fn command_sammichadd(server: &IrcServer, conn: &Connection, chan: &String, sammich: String) {
 	if !sql_table_check(&conn, "sammiches".to_string()) {
 		println!("`sammiches` table not found, creating...");
 		if !sql_table_create(&conn, "sammiches".to_string()) {
-			server.send_privmsg(&chan, "No sammiches table exists and for some reason I cannot create one");
+			let _ = server.send_privmsg(&chan, "No sammiches table exists and for some reason I cannot create one");
 			return;
 		}
 	}
@@ -950,22 +891,22 @@ fn command_sammichadd(server: &IrcServer, botconfig: &BotConfig, conn: &Connecti
 	match conn.execute("INSERT INTO sammiches VALUES(NULL, $1)", &[&sammich]) {
 		Err(err) => {
 			println!("{}", err);
-			server.send_privmsg(&chan, "Error writing to sammiches table.");
+			let _ = server.send_privmsg(&chan, "Error writing to sammiches table.");
 			return;
 		},
 		Ok(_) => {
 			let sayme: String = format!("\"{}\" added.", sammich);
-			server.send_privmsg(&chan, &sayme);
+			let _ = server.send_privmsg(&chan, &sayme);
 			return;
 		},
 	};
 }
 
-fn command_sammich(server: &IrcServer, botconfig: &BotConfig, conn: &Connection, chan: &String, nick: &String) {
+fn command_sammich(server: &IrcServer, conn: &Connection, chan: &String, nick: &String) {
 	if !sql_table_check(&conn, "sammiches".to_string()) {
 		println!("`sammiches` table not found, creating...");
 		if !sql_table_create(&conn, "sammiches".to_string()) {
-			server.send_privmsg(&chan, "No sammiches table exists and for some reason I cannot create one");
+			let _ = server.send_privmsg(&chan, "No sammiches table exists and for some reason I cannot create one");
 			return;
 		}
 	}
@@ -974,7 +915,7 @@ fn command_sammich(server: &IrcServer, botconfig: &BotConfig, conn: &Connection,
 		row.get(0)
 	}).unwrap();
 	if check == 0 {
-		server.send_privmsg(&chan, "No sammiches in the database, add some.");
+		let _ = server.send_privmsg(&chan, "No sammiches in the database, add some.");
 	}
 
 	let result: String = conn.query_row("select sammich from sammiches order by random() limit 1", &[], |row| {
@@ -982,26 +923,26 @@ fn command_sammich(server: &IrcServer, botconfig: &BotConfig, conn: &Connection,
 	}).unwrap();
 
 	let dome: String = format!("whips up a {} sammich for {}", result, nick);
-	server.send_action(&chan, &dome);
+	let _ = server.send_action(&chan, &dome);
 }
 
 fn command_sammich_alt(server: &IrcServer, chan: &String, target: &String) {
 	if is_nick_here(&server, &chan, &target) {
 		let sneak = format!("sneaks up behind {} and cuts their throat", &target);
 		let makesammich = format!("fixes thinly sliced {}'s corpse sammiches for everyone in {}", &target, &chan);
-		server.send_action(&chan, &sneak.as_str());
-		server.send_action(&chan, &makesammich.as_str());
+		let _ = server.send_action(&chan, &sneak.as_str());
+		let _ = server.send_action(&chan, &makesammich.as_str());
 		return;
 	}
 	else {
 		let action = format!("looks around but does not see {}", &target);
-		server.send_action(&chan, &action);
+		let _ = server.send_action(&chan, &action);
 		return;
 	}
 }
 
 fn body_only<'a, 'b>(mut transfer: curl::easy::Transfer<'b, 'a>, dst: &'a mut Vec<u8>) {
-	transfer.write_function(move |data: &[u8]| {
+	let _ = transfer.write_function(move |data: &[u8]| {
 		dst.extend_from_slice(data);
 		Ok(data.len())
 	});
@@ -1010,7 +951,7 @@ fn body_only<'a, 'b>(mut transfer: curl::easy::Transfer<'b, 'a>, dst: &'a mut Ve
 
 fn headers_only<'a, 'b>(mut transfer: curl::easy::Transfer<'b, 'a>, dst: &'a mut Vec<u8>) {
 	transfer.write_function(nullme).unwrap();
-	transfer.header_function(move |data: &[u8]| {
+	let _ = transfer.header_function(move |data: &[u8]| {
 		dst.extend_from_slice(data);
 		true
 	});
@@ -1035,7 +976,7 @@ fn command_google(server: &IrcServer, botconfig: &BotConfig, chan: &String, sear
 	easy.url(url.as_str()).unwrap();
 	// Closure so that transfer will go poof after being used
 	{
-		let mut transfer = easy.transfer();
+		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
 	}
 	if easy.response_code().unwrap_or(999) != 200 {
@@ -1046,7 +987,7 @@ fn command_google(server: &IrcServer, botconfig: &BotConfig, chan: &String, sear
 	let jsonthing = Json::from_str(json).unwrap_or(Json::from_str("{}").unwrap());
 	let found = jsonthing.find("items");
 	if found.is_none() {
-		server.send_privmsg(&chan, "sorry, there were no results for your query");
+		let _ = server.send_privmsg(&chan, "sorry, there were no results for your query");
 		return;
 	}
 	let items = found.unwrap();
@@ -1061,13 +1002,13 @@ fn command_google(server: &IrcServer, botconfig: &BotConfig, chan: &String, sear
 	let regex = Regex::new(r"\\n").unwrap();
 	ressum = regex.replace_all(ressum.as_str(), "");
 	let response = format!("{} - {}", resurl, ressum);
-	server.send_privmsg(&chan, &response);
+	let _ = server.send_privmsg(&chan, &response);
 }
 
 fn command_klingon(server: &IrcServer, botconfig: &BotConfig, chan: &String, english: String) {
 	let token = get_bing_token(&botconfig);
 	if token == "".to_string() {
-		server.send_privmsg(&chan, "Could not get bing translate token, check the logs");
+		let _ = server.send_privmsg(&chan, "Could not get bing translate token, check the logs");
 		return;
 	}
 	let outlangs = vec!["tlh", "tlh-Qaak"];
@@ -1075,9 +1016,9 @@ fn command_klingon(server: &IrcServer, botconfig: &BotConfig, chan: &String, eng
 	let mut translations = Vec::new();
 	for lang in outlangs.iter() {
 		let mut headerlist = List::new();
-		headerlist.append(format!("Authorization: Bearer {}", token).as_str());
-		headerlist.append("Accept-Language: en-US");
-		headerlist.append("Accept-Charset: utf-8");
+		let _ = headerlist.append(format!("Authorization: Bearer {}", token).as_str());
+		let _ = headerlist.append("Accept-Language: en-US");
+		let _ = headerlist.append("Accept-Charset: utf-8");
 		{
 			let mut easy = Easy::new();
 			let benglish = &english.clone().into_bytes();
@@ -1086,7 +1027,7 @@ fn command_klingon(server: &IrcServer, botconfig: &BotConfig, chan: &String, eng
 			easy.url(url.as_str()).unwrap();
 			easy.http_headers(headerlist).unwrap();
 			{
-				let mut transfer = easy.transfer();
+				let transfer = easy.transfer();
 				body_only(transfer, &mut dst);
 			}
 			easy.perform().unwrap();
@@ -1108,7 +1049,7 @@ fn command_klingon(server: &IrcServer, botconfig: &BotConfig, chan: &String, eng
 	let captwo = reg.captures(translations[1].as_str());
 	let tlh = capone.unwrap().at(1).unwrap_or("wtf?!");
 	let qaak = captwo.unwrap().at(1).unwrap_or("wtf?!");
-	server.send_privmsg(&chan, format!("{} ({})    ", tlh, qaak).as_str());
+	let _ = server.send_privmsg(&chan, format!("{} ({})    ", tlh, qaak).as_str());
 	return;
 }
 
@@ -1121,10 +1062,10 @@ fn command_tell(server: &IrcServer, conn: &Connection, chan: &String, nick: &Str
 		return;
 	}
 	if save_msg(&conn, &nick, tellwho, tellwhat) {
-		server.send_privmsg(&chan, "Okay, I'll tell them next time I see them.");
+		let _ = server.send_privmsg(&chan, "Okay, I'll tell them next time I see them.");
 	}
 	else {
-		server.send_privmsg(&chan, "Something borked saving your message, check the logs.");
+		let _ = server.send_privmsg(&chan, "Something borked saving your message, check the logs.");
 	}
 	return;
 }
@@ -1156,11 +1097,11 @@ fn command_roll(server: &IrcServer, botconfig: &BotConfig, chan: &String, args: 
 	let sides = capture.at(2).unwrap_or("0");
 	let side: u64 = sides.parse().unwrap_or(0);
 	if side > maxsides || dice > maxdice || throw > maxthrows {
-		server.send_privmsg(&chan, format!("chromas, is that you? stop being a wiseass.").as_str());
+		let _ = server.send_privmsg(&chan, format!("chromas, is that you? stop being a wiseass.").as_str());
 		return;
 	}
 	else if side < 1 || dice < 1 || throw < 1 {
-		server.send_privmsg(&chan, format!("chromas, is that you? stop being a wiseass.").as_str());
+		let _ = server.send_privmsg(&chan, format!("chromas, is that you? stop being a wiseass.").as_str());
                 return;
 	}
 
@@ -1171,14 +1112,14 @@ fn command_roll(server: &IrcServer, botconfig: &BotConfig, chan: &String, args: 
 			let thisdie = (bignum % side) + 1;
 			total += thisdie;
 		}
-		server.send_privmsg(&chan, format!("pass {}: {}", pass, total).as_str());
+		let _ = server.send_privmsg(&chan, format!("pass {}: {}", pass, total).as_str());
 	}
 	return;
 }
 
 fn command_youtube(server: &IrcServer, botconfig: &BotConfig, chan: &String, query: String) {
 	let link = get_youtube(&botconfig.go_key, &query);
-	server.send_privmsg(&chan, format!("https://www.youtube.com/watch?v={}", link).as_str());
+	let _ = server.send_privmsg(&chan, format!("https://www.youtube.com/watch?v={}", link).as_str());
 	return;
 }
 
@@ -1186,13 +1127,13 @@ fn command_submit(mut botconfig: &mut BotConfig, mut titleres: &mut Vec<Regex>,m
 	let page: String = sub_get_page(&suburl);
 	let title: String = sub_get_title(&mut titleres, &page);
 	if title == "".to_string() {
-		server.send_privmsg(&chan, "Unable to find a title for that page");
+		let _ = server.send_privmsg(&chan, "Unable to find a title for that page");
 		return;
 	}
 
 	let description: String = sub_get_description(&mut descres, &page);
 	if description == "".to_string() {
-		server.send_privmsg(&chan, "Unable to find a summary for that page");
+		let _ = server.send_privmsg(&chan, "Unable to find a summary for that page");
 		return;
 	}
 	
@@ -1203,7 +1144,7 @@ fn command_submit(mut botconfig: &mut BotConfig, mut titleres: &mut Vec<Regex>,m
 	
 	let reskey = sub_get_reskey(&cookie);
 	if reskey == "".to_string() {
-		server.send_privmsg(&chan, "Unable to get a reskey. Check the logs.");
+		let _ = server.send_privmsg(&chan, "Unable to get a reskey. Check the logs.");
 		return;
 	}
 	
@@ -1218,7 +1159,7 @@ fn command_submit(mut botconfig: &mut BotConfig, mut titleres: &mut Vec<Regex>,m
 		botnick: botconfig.nick.clone(),
 	};
 
-	server.send_privmsg(&chan, "Submitting. There is a mandatory delay, please be patient.");
+	let _ = server.send_privmsg(&chan, "Submitting. There is a mandatory delay, please be patient.");
 	
 	let foo = subtx.send(submission);
 	match foo {
@@ -1228,22 +1169,22 @@ fn command_submit(mut botconfig: &mut BotConfig, mut titleres: &mut Vec<Regex>,m
 }
 
 fn command_quit(server: &IrcServer, chan: String) {
-	server.send_privmsg(&chan, "Your wish is my command...");
-	server.send_quit("");
+	let _ = server.send_privmsg(&chan, "Your wish is my command...");
+	let _ = server.send_quit("");
 }
 
 fn command_pissoff(server: &IrcServer, chan: String) {
-	server.send_privmsg(&chan, "Off I shall piss...");
-	server.send_quit("");
+	let _ = server.send_privmsg(&chan, "Off I shall piss...");
+	let _ = server.send_quit("");
 }
 
 fn command_dieinafire(server: &IrcServer, chan: String) {
-	server.send_action(&chan, "dies a firey death");
-	server.send_quit("");
+	let _ = server.send_action(&chan, "dies a firey death");
+	let _ = server.send_quit("");
 }
 
 fn command_join(server: &IrcServer, joinchan: String) {
-	server.send_join(&joinchan);
+	let _ = server.send_join(&joinchan);
 }
 
 fn command_part(server: &IrcServer, vchannels: &Vec<MyChannel>, chan: &String, partchan: String) {
@@ -1252,14 +1193,14 @@ fn command_part(server: &IrcServer, vchannels: &Vec<MyChannel>, chan: &String, p
 	let homechannel = channels[0].clone();
 	if homechannel.to_string() == partchan {
 		let msg = format!("No.");
-		server.send_privmsg(&chan, &msg);
+		let _ = server.send_privmsg(&chan, &msg);
 		return;
 	}
 	
 	for channel in vchannels.iter() {
 		if (channel.name == partchan) && (channel.protected) {
 			let msg = format!("No.");
-			server.send_privmsg(&chan, &msg);
+			let _ = server.send_privmsg(&chan, &msg);
 			return;
 		}
 	}
@@ -1270,12 +1211,12 @@ fn command_part(server: &IrcServer, vchannels: &Vec<MyChannel>, chan: &String, p
 		prefix: None,
 		command: Command::PART(partchan, None), 
 	};
-	server.send(partmsg);
+	let _ = server.send(partmsg);
 	return;
 }
 
 fn command_say(server: &IrcServer, chan: String, message: String) {
-	server.send_privmsg(&chan, message.as_str());
+	let _ = server.send_privmsg(&chan, message.as_str());
 	return;
 }
 
@@ -1291,7 +1232,7 @@ fn command_seen(server: &IrcServer, conn: &Connection, chan: &String, who: Strin
 	if !sql_table_check(&conn, "seen".to_string()) {
 		println!("`seen` table not found, creating...");
 		if !sql_table_create(&conn, "seen".to_string()) {
-			server.send_privmsg(&chan, "No seen table exists and for some reason I cannot create one");
+			let _ = server.send_privmsg(&chan, "No seen table exists and for some reason I cannot create one");
 			return;
 		}
 	}
@@ -1301,7 +1242,7 @@ fn command_seen(server: &IrcServer, conn: &Connection, chan: &String, who: Strin
 	}).unwrap();
 	if count == 0 {
 		let privmsg = format!("Sorry, I have not seen {}", who);
-		server.send_privmsg(&chan, &privmsg);
+		let _ = server.send_privmsg(&chan, &privmsg);
 		return;
 	}
 
@@ -1320,11 +1261,11 @@ fn command_seen(server: &IrcServer, conn: &Connection, chan: &String, who: Strin
 	
 	if result.action {
 		let privmsg = format!("[{}] {} *{} {}", result.datetime, result.channel, result.nick, result.said);
-		server.send_privmsg(&chan, &privmsg);
+		let _ = server.send_privmsg(&chan, &privmsg);
 	}
 	else {
 		let privmsg = format!("[{}] {} <{}> {}", result.datetime, result.channel, result.nick, result.said);
-		server.send_privmsg(&chan, &privmsg);
+		let _ = server.send_privmsg(&chan, &privmsg);
 	}
 	return;
 }
@@ -1333,7 +1274,7 @@ fn command_smake(server: &IrcServer, conn: &Connection, chan: &String, who: Stri
 	if !sql_table_check(&conn, "smakes".to_string()) {
 		println!("`smakes` table not found, creating...");
 		if !sql_table_create(&conn, "smakes".to_string()) {
-			server.send_privmsg(&chan, "No smakes table exists and for some reason I cannot create one");
+			let _ = server.send_privmsg(&chan, "No smakes table exists and for some reason I cannot create one");
 			return;
 		}
 	}
@@ -1342,7 +1283,7 @@ fn command_smake(server: &IrcServer, conn: &Connection, chan: &String, who: Stri
 		row.get(0)
 	}).unwrap();
 	if check == 0 {
-		server.send_privmsg(&chan, "No smakes in the database, add some.");
+		let _ = server.send_privmsg(&chan, "No smakes in the database, add some.");
 	}
 
 	let result: String = conn.query_row("select smake from smakes order by random() limit 1", &[], |row| {
@@ -1350,14 +1291,14 @@ fn command_smake(server: &IrcServer, conn: &Connection, chan: &String, who: Stri
 	}).unwrap();
 
 	let dome: String = format!("smakes {} upside the head with {}", who, result);
-	server.send_action(&chan, &dome);
+	let _ = server.send_action(&chan, &dome);
 }
 
 fn command_smakeadd(server: &IrcServer, conn: &Connection, chan: &String, what: String) {
 	if !sql_table_check(&conn, "smakes".to_string()) {
 		println!("`smakes` table not found, creating...");
 		if !sql_table_create(&conn, "smakes".to_string()) {
-			server.send_privmsg(&chan, "No smakes table exists and for some reason I cannot create one");
+			let _ = server.send_privmsg(&chan, "No smakes table exists and for some reason I cannot create one");
 			return;
 		}
 	}
@@ -1365,12 +1306,12 @@ fn command_smakeadd(server: &IrcServer, conn: &Connection, chan: &String, what: 
 	match conn.execute("INSERT INTO smakes VALUES(NULL, $1)", &[&what]) {
 		Err(err) => {
 			println!("{}", err);
-			server.send_privmsg(&chan, "Error writing to smakes table.");
+			let _ = server.send_privmsg(&chan, "Error writing to smakes table.");
 			return;
 		},
 		Ok(_) => {
 			let sayme: String = format!("\"{}\" added.", what);
-			server.send_privmsg(&chan, &sayme);
+			let _ = server.send_privmsg(&chan, &sayme);
 			return;
 		},
 	};
@@ -1387,7 +1328,7 @@ fn command_fake_weather_add(server: &IrcServer, conn: &Connection, chan: &String
 	match conn.execute("INSERT INTO fake_weather VALUES ($1, $2)", &[&location, &weather]) {
 		Err(err) => {
                         println!("{}", err);
-                        server.send_privmsg(&chan, "Error writing to fake_weather table.");
+                        let _ = server.send_privmsg(&chan, "Error writing to fake_weather table.");
                         return;
                 },
                 Ok(_) => {
@@ -1398,17 +1339,17 @@ fn command_fake_weather_add(server: &IrcServer, conn: &Connection, chan: &String
                 	};
 			wucache.push(entry);
                         let sayme: String = format!("\"{}\" added.", location);
-                        server.send_privmsg(&chan, &sayme);
+                        let _ = server.send_privmsg(&chan, &sayme);
                         return;
                 },
 	};
 }
 
-fn command_weather_alias(botconfig: &BotConfig, server: &IrcServer, conn: &Connection, nick: &String, chan: &String, walias: String) {
+fn command_weather_alias(botconfig: &BotConfig, server: &IrcServer, conn: &Connection, chan: &String, walias: String) {
 	if !sql_table_check(&conn, "weather_aliases".to_string()) {
                 println!("weather_aliases table not found, creating...");
                 if !sql_table_create(&conn, "weather_aliases".to_string()) {
-                        server.send_privmsg(&chan, "No weather_aliases table exists and for some reason I cannot create one");
+                        let _ = server.send_privmsg(&chan, "No weather_aliases table exists and for some reason I cannot create one");
                         return;
                 }
         }
@@ -1431,18 +1372,18 @@ fn command_weather_alias(botconfig: &BotConfig, server: &IrcServer, conn: &Conne
 	}).unwrap();
 	if is_user != 0 {
 		let sayme = format!("{} is someone's nick, jackass.", &flocation);
-		server.send_privmsg(&chan, &sayme);
+		let _ = server.send_privmsg(&chan, &sayme);
 		return;
 	}
 	match conn.execute("REPLACE INTO weather_aliases VALUES ($1, $2 )", &[&flocation, &rlocation]) {
 		Err(err) => {
                         println!("{}", err);
-                        server.send_privmsg(&chan, "Error writing to weather_aliases table.");
+                        let _ = server.send_privmsg(&chan, "Error writing to weather_aliases table.");
                         return;
                 },
                 Ok(_) => {
                         let sayme: String = format!("\"{}\" added.", flocation);
-                        server.send_privmsg(&chan, &sayme);
+                        let _ = server.send_privmsg(&chan, &sayme);
                         return;
                 },
 	};
@@ -1453,7 +1394,7 @@ fn command_weatheradd(server: &IrcServer, conn: &Connection, nick: &String, chan
 	if !sql_table_check(&conn, "locations".to_string()) {
 		println!("locations table not found, creating...");
 		if !sql_table_create(&conn, "locations".to_string()) {
-			server.send_privmsg(&chan, "No locations table exists and for some reason I cannot create one");
+			let _ = server.send_privmsg(&chan, "No locations table exists and for some reason I cannot create one");
 			return;
 		}
 	}
@@ -1461,11 +1402,11 @@ fn command_weatheradd(server: &IrcServer, conn: &Connection, nick: &String, chan
 	match conn.execute("REPLACE INTO locations VALUES($1, $2)", &[nick, &checklocation]) {
 		Err(err) => {
 			println!("{}", err);
-			server.send_privmsg(&chan, "Error saving your location.");
+			let _ = server.send_privmsg(&chan, "Error saving your location.");
 		},
 		Ok(_) => {
 			let sayme: String = format!("Location for {} set to {}", nick, checklocation);
-			server.send_privmsg(&chan, &sayme);
+			let _ = server.send_privmsg(&chan, &sayme);
 		},
 	};
 	return;
@@ -1520,18 +1461,18 @@ fn command_weather(botconfig: &BotConfig, server: &IrcServer, conn: &Connection,
 			None => weather = format!("No location found for {}", nick).to_string(),
 		};
 
-		server.send_privmsg(&chan, &weather.trim().to_string());
+		let _ = server.send_privmsg(&chan, &weather.trim().to_string());
 		return;
 }
 
 fn command_abuser(server: &IrcServer, conn: &Connection, chan: &String, abuser: String) {
 	if hostmask_add(&server, &conn, &chan, "abusers", &abuser) {
 		let result: String = format!("Added '{}' to abusers.", &abuser);
-		server.send_privmsg(&chan, &result);
+		let _ = server.send_privmsg(&chan, &result);
 	}
 	else {
 		let result: String = format!("Failed to add '{}' to abusers. Check the logs.", &abuser);
-		server.send_privmsg(&chan, &result);
+		let _ = server.send_privmsg(&chan, &result);
 	}
 	return;
 }
@@ -1539,11 +1480,11 @@ fn command_abuser(server: &IrcServer, conn: &Connection, chan: &String, abuser: 
 fn command_admin(server: &IrcServer, conn: &Connection, chan: &String, admin: String) {
 	if hostmask_add(&server, &conn, &chan, "admins", &admin) {
 		let result: String = format!("Added '{}' to admins.", &admin);
-		server.send_privmsg(&chan, &result);
+		let _ = server.send_privmsg(&chan, &result);
 	}
 	else {
 		let result: String = format!("Failed to add '{}' to admins. Check the logs.", &admin);
-		server.send_privmsg(&chan, &result);
+		let _ = server.send_privmsg(&chan, &result);
 	}
 	return;
 }
@@ -1551,18 +1492,18 @@ fn command_admin(server: &IrcServer, conn: &Connection, chan: &String, admin: St
 fn command_bot(server: &IrcServer, conn: &Connection, chan: &String, bot: String) {
 	if hostmask_add(&server, &conn, &chan, "bots", &bot) {
 		let result: String = format!("Added '{}' to bots.", &bot);
-		server.send_privmsg(&chan, &result);
+		let _ = server.send_privmsg(&chan, &result);
 	}
 	else {
 		let result: String = format!("Failed to add '{}' to bots. Check the logs.", &bot);
-		server.send_privmsg(&chan, &result);
+		let _ = server.send_privmsg(&chan, &result);
 	}
 	return;
 }
 
 fn command_help(server: &IrcServer, botconfig: &BotConfig, chan: &String, command: Option<String>) {
 	let helptext: String = get_help(&botconfig.prefix, command);
-	server.send_privmsg(&chan, &helptext);
+	let _ = server.send_privmsg(&chan, &helptext);
 }
 
 fn sql_table_check(conn: &Connection, table: String) -> bool {
@@ -1604,7 +1545,7 @@ fn prime_weather_cache(conn: &Connection, mut wucache: &mut Vec<CacheEntry>) {
 
 	statement = format!("SELECT * from {}", &table);
 	let mut stmt = conn.prepare(statement.as_str()).unwrap();
-	let mut allrows = stmt.query_map(&[], |row| {
+	let allrows = stmt.query_map(&[], |row| {
 		CacheEntry {
                 	age: std::i64::MAX,
 	                location: row.get(0),
@@ -1641,7 +1582,7 @@ fn deliver_messages(server: &IrcServer, conn: &Connection, nick: &String) {
 	};
 	let mut timestamps: Vec<i64> = vec![];
 	let mut stmt = conn.prepare(format!("SELECT * FROM messages WHERE recipient = '{}' ORDER BY ts", &nick).as_str()).unwrap();
-	let mut allrows = stmt.query_map(&[], |row| {
+	let allrows = stmt.query_map(&[], |row| {
 		Row {
 			sender: row.get(0),
 			message: row.get(2),
@@ -1651,7 +1592,7 @@ fn deliver_messages(server: &IrcServer, conn: &Connection, nick: &String) {
 
 	for row in allrows {
 		let thisrow = row.unwrap();
-		server.send_privmsg(&nick, format!("<{}> {}", thisrow.sender, thisrow.message).as_str());
+		let _ = server.send_privmsg(&nick, format!("<{}> {}", thisrow.sender, thisrow.message).as_str());
 		timestamps.push(thisrow.ts);
 	}
 	
@@ -1759,10 +1700,6 @@ fn cache_push(mut cache: &mut Vec<CacheEntry>, location: &String, weather: &Stri
 	return;
 }
 
-fn cache_dump(cache: Vec<CacheEntry>) {
-	println!("{:?}", cache);
-}
-
 fn cache_get(mut cache: &mut Vec<CacheEntry>, location: &String) -> Option<String> {
 	cache_prune(&mut cache);
 	let position: Option<usize> = cache.iter().position(|ref x| x.location == location.to_string().clone().to_lowercase());
@@ -1798,7 +1735,7 @@ fn get_weather(mut wucache: &mut Vec<CacheEntry>, wu_key: &String, location: Str
 	let url = format!("http://api.wunderground.com/api/{}/forecast/q/{}.json", wu_key.to_string(), encloc.to_string());
 	easy.url(url.as_str()).unwrap();
 	{
-		let mut transfer = easy.transfer();
+		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
 	}
 	if easy.response_code().unwrap_or(999) != 200 {
@@ -1853,7 +1790,7 @@ fn hostmask_add(server: &IrcServer, conn: &Connection, chan: &String, table: &st
 		println!("{} table not found, creating...", table);
 		if !sql_table_create(&conn, table.to_string()) {
 			let err: String = format!("No {} table exists and for some reason I cannot create one. Check the logs.", table);
-			server.send_privmsg(&chan, &err);
+			let _ = server.send_privmsg(&chan, &err);
 			return false;
 		}
 	}
@@ -1874,7 +1811,7 @@ fn is_admin(botconfig: &BotConfig, server: &IrcServer, conn: &Connection, chan: 
 		println!("{} table not found, creating...", &table);
 		if !sql_table_create(&conn, table.clone()) {
 			let err: String = format!("No {} table exists and for some reason I cannot create one. Check the logs.", &table);
-			server.send_privmsg(&chan, &err);
+			let _ = server.send_privmsg(&chan, &err);
 			return false;
 		}
 		let statement: String = format!("INSERT INTO {} VALUES($1)", &table).to_string();
@@ -1898,13 +1835,13 @@ fn is_admin(botconfig: &BotConfig, server: &IrcServer, conn: &Connection, chan: 
 	false
 }
 
-fn is_bot(server: &IrcServer, conn: &Connection, chan: &String, hostmask: &String) -> bool {
+fn _is_bot(server: &IrcServer, conn: &Connection, chan: &String, hostmask: &String) -> bool {
 	let table = "bots".to_string();
 	if !sql_table_check(&conn, table.clone()) {
 		println!("{} table not found, creating...", &table);
 		if !sql_table_create(&conn, table.clone()) {
 			let err: String = format!("No {} table exists and for some reason I cannot create one. Check the logs.", &table);
-			server.send_privmsg(&chan, &err);
+			let _ = server.send_privmsg(&chan, &err);
 			return false;
 		}
 	}
@@ -1926,7 +1863,7 @@ fn is_abuser(server: &IrcServer, conn: &Connection, chan: &String, hostmask: &St
 		println!("{} table not found, creating...", &table);
 		if !sql_table_create(&conn, table.clone()) {
 			let err: String = format!("No {} table exists and for some reason I cannot create one. Check the logs.", &table);
-			server.send_privmsg(&chan, &err);
+			let _ = server.send_privmsg(&chan, &err);
 			return false;
 		}
 	}
@@ -1980,7 +1917,7 @@ fn sub_get_page(url: &String) -> String {
 	let mut easy = Easy::new();
 	easy.url(url.as_str()).unwrap();
 	{
-		let mut transfer = easy.transfer();
+		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
 	}
 	if easy.response_code().unwrap_or(999) != 200 {
@@ -2044,7 +1981,7 @@ fn sub_get_reskey(cookie: &String) -> String {
 	easy.url(url.as_str()).unwrap();
 	easy.cookie(cookie.as_str()).unwrap();
 	{
-		let mut transfer = easy.transfer();
+		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
 	}
 	if easy.response_code().unwrap_or(999) != 200 {
@@ -2084,7 +2021,7 @@ fn sub_get_cookie(botconfig: &mut BotConfig) -> String {
 	let mut easy = Easy::new();
 	easy.url(url.as_str()).unwrap();
 	{
-		let mut transfer = easy.transfer();
+		let transfer = easy.transfer();
 		headers_only(transfer, &mut dst);
 	}
 	if easy.response_code().unwrap_or(999) != 200 {
@@ -2176,7 +2113,7 @@ fn load_descres(exists: Option<Vec<Regex>>) -> Vec<Regex> {
 fn load_channels(conn: &Connection) -> Vec<MyChannel> {
 	let mut channels: Vec<MyChannel> = Vec::new();
 	let mut stmt = conn.prepare("SELECT * FROM channels").unwrap();
-	let mut allrows = stmt.query_map(&[], |row| {
+	let allrows = stmt.query_map(&[], |row| {
 		let iprotected: i32 = row.get(1);
 		let mut protected: bool = false;
 		if iprotected != 0 { protected = true; }
@@ -2200,9 +2137,9 @@ fn get_youtube(go_key: &String, query: &String) -> String {
 	let encquery = easy.url_encode(&querybytes[..]);
 	let url = format!("https://www.googleapis.com/youtube/v3/search/?maxResults=1&q={}&order=relevance&type=video&part=snippet&key={}", encquery, go_key);
 	easy.url(url.as_str()).unwrap();
-	easy.fail_on_error(true);
+	let _ = easy.fail_on_error(true);
 	{
-		let mut transfer = easy.transfer();
+		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
 	}
 
@@ -2231,7 +2168,7 @@ fn send_submission(submission: &Submission) -> bool {
 		url = "https://soylentnews.org/api.pl?m=story&op=post".to_string().trim().to_string();
 	}
 	let fooclone;
-	let mut postdata = "foo".as_bytes();
+	let postdata;
 	let mut dst = Vec::new();
 	let mut easy = Easy::new();
 	let subjectbytes = submission.subject.clone().into_bytes();
@@ -2255,9 +2192,9 @@ fn send_submission(submission: &Submission) -> bool {
 	easy.post_field_size(postdata.len() as u64).unwrap();
 	easy.post_fields_copy(postdata).unwrap();
 	easy.post(true).unwrap();
-	easy.fail_on_error(true);
+	let _ = easy.fail_on_error(true);
 	{
-		let mut transfer = easy.transfer();
+		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
 	}
 	if easy.response_code().unwrap_or(999) != 200 {
@@ -2273,7 +2210,6 @@ fn send_submission(submission: &Submission) -> bool {
 
 fn get_bing_token(botconfig: &BotConfig) -> String {
 	let url = "https://datamarket.accesscontrol.windows.net/v2/OAuth2-13/";
-	let mut postdata = "foo".as_bytes();
 	let mut dst = Vec::new();
 	let mut easy = Easy::new();
 	let secretbytes = &botconfig.bi_key[..].as_bytes();
@@ -2284,7 +2220,7 @@ fn get_bing_token(botconfig: &BotConfig) -> String {
 	easy.post_fields_copy(postbytes).unwrap();
 	easy.post(true).unwrap();
 	{
-		let mut transfer = easy.transfer();
+		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
 	}
 	if easy.response_code().unwrap_or(999) != 200 {
@@ -2310,10 +2246,6 @@ fn get_bing_token(botconfig: &BotConfig) -> String {
 	return token;
 }
 
-fn is_ns_faker(server: &IrcServer, nick: &String) -> bool {
-	return false;
-}
-
 fn is_nick_here(server: &IrcServer, chan: &String, nick: &String) -> bool {
 	let nicklist = server.list_users(&chan.as_str());
 	if nicklist.is_none() {
@@ -2328,63 +2260,11 @@ fn is_nick_here(server: &IrcServer, chan: &String, nick: &String) -> bool {
 	return false;
 }
 
-fn get_raw_feed(feed: &String) -> String {
-	let mut dst = Vec::new();
-	let mut easy = Easy::new();
-	let url = feed.clone();
-	easy.url(url.as_str()).unwrap();
-	easy.fail_on_error(true);
-	{
-		let mut transfer = easy.transfer();
-		body_only(transfer, &mut dst);
-	}
-	if easy.response_code().unwrap_or(999) != 200 {
-		println!("got http response code {}", easy.response_code().unwrap_or(999));
-		return "Something borked, check the logs.".to_string();
-	}
-	let feed_data = str::from_utf8(&dst[..]).unwrap_or("");
-	return feed_data.to_string();
-}
-
-fn get_feed_title(feed: &String) -> String {
-	let feedstr = feed.as_str();
-	if is_atom(&feedstr) {
-		let parsed = feedstr.parse::<Feed>().unwrap();
-		return parsed.title.to_string();
-	}
-	else if is_rss2(&feedstr) {
-		let parsed = feedstr.parse::<Rss>().unwrap();
-		return parsed.0.title.to_string();
-	}
-	else {
-		return "Unknown feed type".to_string();
-	}
-}
-
-fn is_atom(feedstr: &str) -> bool {
-	let re = Regex::new(r"xmlns=\S+Atom").unwrap();
-	if re.is_match(feedstr) {
-		return true;
-	}
-	else {
-		return false;
-	}
-}
-
-fn is_rss2(feedstr: &str) -> bool {
-	let re = Regex::new(r"<rss.*?version=.2\.0.").unwrap();
-	if re.is_match(feedstr) {
-		return true;
-	}
-	else {
-		return false;
-	}
-}
 // Returns the number of ms until next recurrence if this is a recurring timer
 fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, conn: &Connection, timer: &TimerTypes) -> u64 {
 	match timer {
-		&TimerTypes::Action { ref chan, ref msg } => { server.send_action(&chan, &msg); return 0_u64; },
-		&TimerTypes::Message { ref chan, ref msg } => { server.send_privmsg(&chan, &msg); return 0_u64; },
+		&TimerTypes::Action { ref chan, ref msg } => { let _ = server.send_action(&chan, &msg); return 0_u64; },
+		&TimerTypes::Message { ref chan, ref msg } => { let _ = server.send_privmsg(&chan, &msg); return 0_u64; },
 		&TimerTypes::Once { ref command } => {
 			match &command[..] {
 				"goodfairy" => {
@@ -2402,14 +2282,14 @@ fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, conn: &Connectio
 					command_goodfairy( &server, &conn, &chan );
 				},
 				"scoreboard" => {
-					let chan = "#fite".to_string();
-					fitectl_scoreboard(&server, &conn, &chan, false);
+					fitectl_scoreboard(&server, &conn, false);
 				},
 				_ => {},
 			};
 			return every.clone() as u64;
 		},
 		&TimerTypes::Sendping { ref doping } => {
+            if !doping { return 0_u64; }
 			let timer = Timer {
 				delay: 0,
 				action: TimerTypes::Feedback{
@@ -2417,15 +2297,15 @@ fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, conn: &Connectio
 				},
 			};
 			// send msg to turn off botconfig.is_fighting
-			feedbacktx.send(timer);
+			let _ = feedbacktx.send(timer);
 			// send server ping to get us a response that will trigger a read of feedbackrx
-			server.send(Message{tags: None, prefix: None, command: Command::PING("irc.soylentnews.org".to_string(), None)});
+			let _ = server.send(Message{tags: None, prefix: None, command: Command::PING("irc.soylentnews.org".to_string(), None)});
 			return 0_u64;
 		},
 		&TimerTypes::Savechars { ref attacker, ref defender } => {
 			save_character(&conn, &attacker);
 			save_character(&conn, &defender);
-			fitectl_scoreboard(&server, &conn, &"null".to_string(), true);
+			fitectl_scoreboard(&server, &conn, true);
 			return 0_u64;
 		},
 		_ => {return 0_u64;},
@@ -2435,7 +2315,7 @@ fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, conn: &Connectio
 fn get_recurring_timers(conn: &Connection) -> Vec<TimerTypes> {
 	let mut recurringTimers: Vec<TimerTypes> = Vec::new();
 	let mut stmt = conn.prepare("SELECT * FROM recurring_timers").unwrap();
-	let mut allrows = stmt.query_map(&[], |row| {
+	let allrows = stmt.query_map(&[], |row| {
 		TimerTypes::Recurring {
 			every: row.get(0),
 			command: row.get(1),
@@ -2451,12 +2331,11 @@ fn get_recurring_timers(conn: &Connection) -> Vec<TimerTypes> {
 }
 
 // Begin fite code
-fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfig: &BotConfig, chan: &String, attacker: &String, target: &String) -> bool {
+fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, attacker: &String, target: &String) -> bool {
 	let spamChan = "#fite".to_string();
 	let mut msgDelay = 0_u64;
 	let mut oAttacker: Character = get_character(&conn, &attacker);
 	let mut oDefender: Character = get_character(&conn, &target);
-	let mut rng = rand::thread_rng();
 	let mut rAttacker: &mut Character;
 	let mut rDefender: &mut Character;
 	let mut surprise: bool = false;
@@ -2466,12 +2345,12 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 	// Make sure both characters are currently alive
 	if !is_alive(&oAttacker) {
 		let err = format!("#fite How can you fight when you're dead? Try again tomorrow.");
-		server.send_privmsg(&spamChan, &err);
+		let _ = server.send_privmsg(&spamChan, &err);
 		return false;
 	}
 	if !is_alive(&oDefender) {
 		let err = format!("#fite {}'s corpse is currently rotting on the ground. Try fighting someone who's alive.", &target);
-		server.send_privmsg(&spamChan, &err);
+		let _ = server.send_privmsg(&spamChan, &err);
 		return false;
 	}
 
@@ -2498,7 +2377,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: msg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 			msgDelay += 1000_u64;
 		}
 	}
@@ -2551,7 +2430,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: msg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 		}
 		// Crit
 		else if attackRoll == 20_u8 {
@@ -2571,7 +2450,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: msg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 		}
 		// Hit
 		else if attackRoll > ARMOR_CLASS {
@@ -2590,7 +2469,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: msg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 		}
 		// Fumble
 		else if attackRoll == 1_u8 {
@@ -2603,7 +2482,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: msg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 		}
 		// Miss
 		else {
@@ -2615,7 +2494,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: msg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 		}
 		// Bail if rDefender is dead
 		if !is_alive(&rDefender) {
@@ -2633,7 +2512,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: deathmsg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 			break;
 		}
 		msgDelay += 1000_u64;
@@ -2654,7 +2533,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: msg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 		}
 		// Crit
 		else if attackRoll == 20_u8 {
@@ -2674,7 +2553,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: msg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 		}
 		// Hit
 		else if attackRoll > ARMOR_CLASS {
@@ -2693,7 +2572,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: msg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 		}
 		// Fumble
 		else if attackRoll == 1_u8 {
@@ -2706,7 +2585,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: msg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 		}
 		// Miss
 		else {
@@ -2718,7 +2597,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: msg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 		}
 		// Bail if rAttacker is dead
 		if !is_alive(&rAttacker) {
@@ -2736,7 +2615,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 						msg: deathmsg,
 				},
 			};
-			timertx.send(sendme);
+			let _ = timertx.send(sendme);
 			break;
 		}
 		msgDelay += 1000_u64;
@@ -2752,7 +2631,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
 			defender: cDefender,
 		},
 	};
-	timertx.send(saveTimer);
+	let _ = timertx.send(saveTimer);
 	// Send a timer to the timer handling thread with msgDelay + 100 delay so it fires just after the last
         let timer = Timer {
                 delay: msgDelay + 1100_u64,
@@ -2760,7 +2639,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, botconfi
                         doping: true,
                 },
         };
-        timertx.send(timer);
+        let _ = timertx.send(timer);
 	return true;
 }
 
@@ -2827,7 +2706,7 @@ fn get_character(conn: &Connection, nick: &String) -> Character {
 			row.get(5),
 		)
 	}).unwrap_or((0_i64, 0_i64, "".to_string(), "".to_string(), 0_i64));
-	let mut character: Character = Character {
+	let character: Character = Character {
 			nick: nick.clone(),
 			level: leveli as u64,
 			hp: hpi as u64,
@@ -2839,7 +2718,7 @@ fn get_character(conn: &Connection, nick: &String) -> Character {
 	return character;
 }
 
-fn fitectl_scoreboard(server: &IrcServer, conn: &Connection, chan: &String, quiet: bool) {
+fn fitectl_scoreboard(server: &IrcServer, conn: &Connection, quiet: bool) {
 	let spamChan = "#fite".to_string();
 	struct Row {
 		nick: String,
@@ -2850,7 +2729,7 @@ fn fitectl_scoreboard(server: &IrcServer, conn: &Connection, chan: &String, quie
 	}
 
 	let mut stmt = conn.prepare("SELECT * FROM characters ORDER BY level DESC, hp DESC, nick").unwrap();
-	let mut allrows = stmt.query_map(&[], |row| {
+	let allrows = stmt.query_map(&[], |row| {
 		Row {
 			nick: row.get(0),
 			lvl: row.get(1),
@@ -2889,7 +2768,7 @@ fn fitectl_scoreboard(server: &IrcServer, conn: &Connection, chan: &String, quie
 		Ok(_) => {
 			let msg = format!("#fite scoreboard updated: https://sylnt.us/fitescoreboard.html");
 			if !quiet {
-				server.send_privmsg(&chan, &msg);
+				let _ = server.send_privmsg(&spamChan, &msg);
 			}
 		},
 		Err(err) => { println!("{}", err); },
@@ -2920,7 +2799,7 @@ fn fitectl_status(server: &IrcServer, conn: &Connection, chan: &String, nick: &S
 	}).unwrap();
 
 	let msg = format!("#fite {} level: {}, hp: {}, weapon: '{}', armor: '{}'", result.nick, result.lvl, result.hp, result.w, result.a);
-	server.send_privmsg(&chan, &msg);
+	let _ = server.send_privmsg(&chan, &msg);
 }
 
 fn fitectl_weapon(server: &IrcServer, conn: &Connection, chan: &String, nick: &String, weapon: String) {
@@ -2936,7 +2815,7 @@ fn fitectl_weapon(server: &IrcServer, conn: &Connection, chan: &String, nick: &S
 	}
 	conn.execute("UPDATE characters SET weapon = ? WHERE nick = ?", &[&saveWeapon.as_str(), &nick.as_str()]).unwrap();
 	let msg = format!("#fite weapon for {} set to {}.", &nick, &saveWeapon);
-	server.send_privmsg(&chan, &msg);
+	let _ = server.send_privmsg(&chan, &msg);
 }
 
 fn fitectl_armor(server: &IrcServer, conn: &Connection, chan: &String, nick: &String, armor: String) {
@@ -2952,5 +2831,5 @@ fn fitectl_armor(server: &IrcServer, conn: &Connection, chan: &String, nick: &St
 	}
 	conn.execute("UPDATE characters SET armor = ? WHERE nick = ?", &[&saveArmor.as_str(), &nick.as_str()]).unwrap();
 	let msg = format!("#fite armor for {} set to {}.", &nick, &saveArmor);
-	server.send_privmsg(&chan, &msg);
+	let _ = server.send_privmsg(&chan, &msg);
 }

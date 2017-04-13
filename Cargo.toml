@@ -1,6 +1,6 @@
 [package]
 name = "rustbot"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["TheMightyBuzzard <themightybuzzard@soylentnews.org>"]
 
 [[bin]]
@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 regex = "0.1"
-rusqlite = "0.6"
+rusqlite = "0.7"
 rustc-serialize = "0.3"
 irc = { path = "../irc" }
 time = "0.1"
