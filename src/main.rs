@@ -2653,7 +2653,8 @@ fn save_character(conn: &Connection, character: &Character) {
 fn roll_once(sides: u8) -> u8 {
 	let mut rng = rand::thread_rng();
 	let random = rng.gen::<u64>();
-	let roll = ((random % (sides as u64)) + 1) as u8;
+	let mut roll = (random % (sides as u64)) as u8;
+    roll += 1;
 	return roll;
 }
 
