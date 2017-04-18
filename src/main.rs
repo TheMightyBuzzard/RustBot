@@ -21,7 +21,7 @@ use rustc_serialize::json::Json;
 use rusqlite::Connection;
 use rand::Rng;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct BotConfig {
 	nick: String,
 	altn1: String,
@@ -157,25 +157,7 @@ fn main() {
 	let mut storables: Storables = Storables {
 		wucache: wucache,
 		conn: Connection::open("/home/bob/etc/snbot/usersettings.db").unwrap(),
-		botconfig: conn.query_row("SELECT nick, server, channel, prefix, admin_hostmask, snpass, snuser, cookiefile, wu_api_key, google_key, bing_key, g_cse_id FROM bot_config WHERE nick = ?", &[&thisbot], |row| {
-			BotConfig {
-				nick: row.get(0),
-				altn1: row.get(0),
-				altn2: row.get(0),
-				server: row.get(1),
-				channel: row.get(2),
-				prefix: row.get(3),
-				admin: row.get(4),
-				snpass: row.get(5),
-				snuser: row.get(6),
-				cookie: "".to_string(),
-				wu_key: row.get(8),
-				go_key: row.get(9),
-				bi_key: row.get(10),
-				cse_id: row.get(11),
-				is_fighting: false,
-			}
-			}).unwrap(),
+		botconfig: botconfig.clone(),
 		server: IrcServer::from_config(
 				irc::client::data::config::Config {
 					owners: None,
@@ -297,6 +279,19 @@ fn main() {
 		});
 	}
 
+    // let's have us some async Message handling
+    let (msgtx, msgrx) = mpsc::channel::<irc::client::data::Message>();
+    {	
+		let server = storables.server.clone();
+		let _ = thread::spawn(move || {
+			for message in server.iter() {
+                let umsg = message.unwrap();
+                msgtx.send(umsg).unwrap();
+			}
+		});
+	}
+
+
 	let tGoodfairy = Timer {
 		delay: 5000_u64,
 		action: TimerTypes::Once {
@@ -305,69 +300,79 @@ fn main() {
 	};
 	let _ = timertx.send(tGoodfairy);
 
-	for message in storables.server.iter() {
-		let umessage = message.unwrap();
-		let mut chan: String = "foo".to_string();
-		let mut said: String = "bar".to_string();
-		let msgclone = umessage.clone();
-		let nick = msgclone.source_nickname();
-		let snick: String;
-		match umessage.command {
-			irc::client::data::command::Command::PRIVMSG(ref c, ref d) => {
-				splitprivmsg(&mut chan, &mut said, &c, &d);
-				said = said.trim_right().to_string();
-				let hostmask = msgclone.prefix.clone().unwrap().to_string();
-				snick = nick.unwrap().to_string();
-				println!("{:?}", umessage);
-
-				if check_messages(&storables.conn, &snick) {
-					deliver_messages(&storables.server, &storables.conn, &snick);
-				}
-
-				if is_action(&said) {
-					let mut asaid = said.clone();
-					asaid = asaid[8..].to_string();
-					let asaidend = asaid.len() - 1;
-					asaid = asaid[..asaidend].to_string();
-					log_seen(&storables, &chan, &snick, &hostmask, &asaid, 1);
-					process_action(&storables, &snick, &chan, &said);
-				}
-				else if is_command(&mut storables.botconfig.prefix, &said) {
-					process_command(&mut storables.titleres, &mut storables.descres, &mut storables.channels, &storables.server, &subtx, &timertx, &storables.conn, &mut storables.wucache, &mut storables.botconfig, &snick, &hostmask, &chan, &said);
-					log_seen(&storables, &chan, &snick, &hostmask, &said, 0);
-				}
-				else {
-					log_seen(&storables, &chan, &snick, &hostmask, &said, 0);
-					continue;
-				}
-			},
-			irc::client::data::command::Command::PING(_,_) => {continue;},
-			irc::client::data::command::Command::PONG(_,_) => {
-				match feedbackrx.try_recv() {
-					Err(_) => { },
-					Ok(timer) => {
-						if DEBUG {
-							println!("{:?}", timer);
-						}
-						match timer.action {
-							TimerTypes::Feedback {ref command} => {
-								match &command[..] {
-									"fiteoff" => {
-										storables.botconfig.is_fighting = false;
-									},
-									_ => {},
-								};
-							},
-							_ => {},
-						};
-						//qTimers.push(timer);
-					}	
-				};
-				println!("{:?}", umessage);
-				continue;
-			},
-			_ => println!("{:?}", umessage)
-		}
+    // main loop
+    let onems = Duration::from_millis(1);
+	loop {
+        match msgrx.try_recv() {
+            Err(err) => {
+                match err {
+                    std::sync::mpsc::TryRecvError::Empty => {thread::sleep(onems);},
+                    std::sync::mpsc::TryRecvError::Disconnected => { exit(1); },
+                };
+            },
+            Ok(umessage) => {
+    	    	let mut chan: String = "foo".to_string();
+	    	    let mut said: String = "bar".to_string();
+	    	    let nick = umessage.source_nickname();
+        		let snick: String;
+	    	    match umessage.command {
+	        		irc::client::data::command::Command::PRIVMSG(ref c, ref d) => {
+    		    		splitprivmsg(&mut chan, &mut said, &c, &d);
+				        said = said.trim_right().to_string();
+			    	    let hostmask = umessage.prefix.clone().unwrap().to_string();
+    		    		snick = nick.unwrap().to_string();
+	        			println!("{:?}", umessage);
+        
+		    	    	if check_messages(&storables.conn, &snick) {
+		        			deliver_messages(&storables.server, &storables.conn, &snick);
+	    		    	}
+    
+    				    if is_action(&said) {
+					        let mut asaid = said.clone();
+    				    	asaid = asaid[8..].to_string();
+	    		    		let asaidend = asaid.len() - 1;
+		        			asaid = asaid[..asaidend].to_string();
+	    	    			log_seen(&storables, &chan, &snick, &hostmask, &asaid, 1);
+    			    		process_action(&storables, &snick, &chan, &said);
+				        }
+    			    	else if is_command(&mut storables.botconfig.prefix, &said) {
+	    	    			process_command(&mut storables.titleres, &mut storables.descres, &mut storables.channels, &storables.server, &subtx, &timertx, &storables.conn, &mut storables.wucache, &mut storables.botconfig, &snick, &hostmask, &chan, &said);
+	        				log_seen(&storables, &chan, &snick, &hostmask, &said, 0);
+    		    		}
+				        else {
+			    	    	log_seen(&storables, &chan, &snick, &hostmask, &said, 0);
+		    			    continue;
+    	    			}
+        			},
+		    	    irc::client::data::command::Command::PING(_,_) => {continue;},
+		        	irc::client::data::command::Command::PONG(_,_) => {
+	    		    	match feedbackrx.try_recv() {
+    				    	Err(_) => { },
+					        Ok(timer) => {
+				    		    if DEBUG {
+    			    				println!("{:?}", timer);
+	    	    				}
+	        					match timer.action {
+    		    					TimerTypes::Feedback {ref command} => {
+				    			    	match &command[..] {
+					    	    			"fiteoff" => {
+					        					storables.botconfig.is_fighting = false;
+				    		    			},
+			    				    		_ => {},
+		    						    };
+    	    						},
+        							_ => {},
+		    				    };
+			    		    	//qTimers.push(timer);
+				        	}	
+			    	    };
+    		    		println!("{:?}", umessage);
+	        			continue;
+    	    		},
+			        _ => println!("{:?}", umessage)
+		        }
+            },
+        };
 	}
 }
 
