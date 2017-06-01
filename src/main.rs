@@ -937,7 +937,7 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "raw ", false) {
-		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
+		if !is_admin(&nick) {
 			return;
 		}
 		let what = noprefix["raw ".len()..].trim().to_string();
