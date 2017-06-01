@@ -37,7 +37,7 @@ struct BotConfig {
 	altn1: String,
 	altn2: String,
 	server: String,
-    port: u16,
+	port: u16,
 	channels: Vec<String>,
 	protected: Vec<String>,
 	prefix: String,
@@ -88,13 +88,13 @@ impl BotConfig {
 	pub fn save(self) {
 		let bot_config = format!("/home/bob/etc/snbot/config.json");
 		match File::create(&bot_config) {
-	        Ok(file) => {
+			Ok(file) => {
 				let _ = serde_json::to_writer_pretty(file, &self);
-		    },
-	        Err(err) => {
-			    println!("error creating BotConfig file: {:?}", err);
-		    },
-	    };
+			},
+			Err(err) => {
+				println!("error creating BotConfig file: {:?}", err);
+			},
+		};
 	}
 	*/
 	pub fn destroy(self) {
@@ -328,14 +328,14 @@ fn main() {
 		});
 	}
 
-    // let's have us some async Message handling
-    let (msgtx, msgrx) = mpsc::channel::<irc::client::data::Message>();
-    {	
+	// let's have us some async Message handling
+	let (msgtx, msgrx) = mpsc::channel::<irc::client::data::Message>();
+	{	
 		let server = server.clone();
 		let _ = thread::spawn(move || {
 			for message in server.iter() {
-                let umsg = message.unwrap();
-                msgtx.send(umsg).unwrap();
+				let umsg = message.unwrap();
+				msgtx.send(umsg).unwrap();
 			}
 		});
 	}
@@ -349,83 +349,83 @@ fn main() {
 	};
 	let _ = timertx.send(tGoodfairy);
 
-    // main loop
-    let onems = Duration::from_millis(1);
+	// main loop
+	let onems = Duration::from_millis(1);
 	loop {
-        match msgrx.try_recv() {
-            Err(err) => {
-                match err {
-                    std::sync::mpsc::TryRecvError::Empty => {thread::sleep(onems);},
-                    std::sync::mpsc::TryRecvError::Disconnected => {
-                        println!("Lost socket to message iterator thread, shutting down!");
-                        exit(1);
-                    },
-                };
-            },
-            Ok(umessage) => {
-	    	    let nick = umessage.source_nickname();
-        		let snick: String;
-	    	    match umessage.command {
-	        		irc::client::data::command::Command::PRIVMSG(ref chan, ref untrimmed) => {
-				        let said = untrimmed.trim_right().to_string();
-			    	    let hostmask = umessage.prefix.clone().unwrap().to_string();
-    		    		snick = nick.unwrap().to_string();
-	        			println!("{:?}", umessage);
+		match msgrx.try_recv() {
+			Err(err) => {
+				match err {
+					std::sync::mpsc::TryRecvError::Empty => {thread::sleep(onems);},
+					std::sync::mpsc::TryRecvError::Disconnected => {
+						println!("Lost socket to message iterator thread, shutting down!");
+						exit(1);
+					},
+				};
+			},
+			Ok(umessage) => {
+				let nick = umessage.source_nickname();
+				let snick: String;
+				match umessage.command {
+					irc::client::data::command::Command::PRIVMSG(ref chan, ref untrimmed) => {
+						let said = untrimmed.trim_right().to_string();
+						let hostmask = umessage.prefix.clone().unwrap().to_string();
+						snick = nick.unwrap().to_string();
+						println!("{:?}", umessage);
 
-		    	    	if check_messages(&snick) {
-		        			deliver_messages(&server, &snick);
-				    	}
+						if check_messages(&snick) {
+							deliver_messages(&server, &snick);
+						}
 
-    
-    				    if is_action(&said) {
-					        let mut asaid = said.clone();
-    				    	asaid = asaid[8..].to_string();
-	    		    		let asaidend = asaid.len() - 1;
-		        			asaid = asaid[..asaidend].to_string();
-	    	    			log_seen(&chan, &snick, &hostmask, &asaid, 1);
-    			    		process_action(&server, &snick, &chan, &said);
-				        }
-    			    	else if is_command(&said) {
-	    	    			process_command(&server, &subtx, &timertx, &snick, &hostmask, &chan, &said);
-	        				log_seen(&chan, &snick, &hostmask, &said, 0);
-    		    		}
-				        else {
-			    	    	log_seen(&chan, &snick, &hostmask, &said, 0);
-		    			    continue;
-    	    			}
-        			},
-		    	    irc::client::data::command::Command::PING(_,_) => {continue;},
-		        	irc::client::data::command::Command::PONG(_,_) => {
-	    		    	match feedbackrx.try_recv() {
-    				    	Err(_) => { },
-					        Ok(timer) => {
-				    		    if DEBUG {
-    			    				println!("{:?}", timer);
-	    	    				}
-	        					match timer.action {
-    		    					TimerTypes::Feedback {ref command} => {
-				    			    	match &command[..] {
-					    	    			"fiteoff" => {
+	
+						if is_action(&said) {
+							let mut asaid = said.clone();
+							asaid = asaid[8..].to_string();
+							let asaidend = asaid.len() - 1;
+							asaid = asaid[..asaidend].to_string();
+							log_seen(&chan, &snick, &hostmask, &asaid, 1);
+							process_action(&server, &snick, &chan, &said);
+						}
+						else if is_command(&said) {
+							process_command(&server, &subtx, &timertx, &snick, &hostmask, &chan, &said);
+							log_seen(&chan, &snick, &hostmask, &said, 0);
+						}
+						else {
+							log_seen(&chan, &snick, &hostmask, &said, 0);
+							continue;
+						}
+					},
+					irc::client::data::command::Command::PING(_,_) => {continue;},
+					irc::client::data::command::Command::PONG(_,_) => {
+						match feedbackrx.try_recv() {
+							Err(_) => { },
+							Ok(timer) => {
+								if DEBUG {
+									println!("{:?}", timer);
+								}
+								match timer.action {
+									TimerTypes::Feedback {ref command} => {
+										match &command[..] {
+											"fiteoff" => {
 												match BOTSTATE.lock() {
 													Err(err) => println!("Error locking BOTSTATE: {:?}", err),
 													Ok(mut botstate) => botstate.is_fighting = false,
 												};
-				    		    			},
-			    				    		_ => {},
-		    						    };
-    	    						},
-        							_ => {},
-		    				    };
-			    		    	//qTimers.push(timer);
-				        	}	
-			    	    };
-    		    		println!("{:?}", umessage);
-	        			continue;
-    	    		},
-			        _ => println!("{:?}", umessage)
-		        }
-            },
-        };
+											},
+											_ => {},
+										};
+									},
+									_ => {},
+								};
+								//qTimers.push(timer);
+							}	
+						};
+						println!("{:?}", umessage);
+						continue;
+					},
+					_ => println!("{:?}", umessage)
+				}
+			},
+		};
 	}
 }
 
@@ -866,8 +866,8 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 	}
 	else if cmd_check(&noprefixbytes, "goodfairy", true) {
 		if !is_admin(&nick) {
-                        return;
-                }
+						return;
+				}
 		command_goodfairy(&server, &chan);
 		return;
 	}
@@ -914,28 +914,44 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 	}
 	else if cmd_check(&noprefixbytes, "fakeweather", true) || cmd_check(&noprefixbytes, "fakeweather ", false) {
 		if is_abuser(&server, &chan, &maskonly) {
-                        return;
-                }
+						return;
+				}
 		if noprefix.as_str() == "fakeweather" {
 			command_help(&server, &chan, Some("fakeweather".to_string()));
 			return;
 		}
-                let what = noprefix["fakeweather ".len()..].trim().to_string();
-                command_fake_weather_add(&server, &chan, what);
+				let what = noprefix["fakeweather ".len()..].trim().to_string();
+				command_fake_weather_add(&server, &chan, what);
 		return;
-        }
+		}
 	else if cmd_check(&noprefixbytes, "weatheralias", true) || cmd_check(&noprefixbytes, "weatheralias ", false) {
 		if is_abuser(&server, &chan, &maskonly) {
 			return;
 		}
 		if noprefix.as_str() == "weatheralias" {
-	                command_help(&server, &chan, Some("weatheralias".to_string()));
+					command_help(&server, &chan, Some("weatheralias".to_string()));
 			return;
 		}
-                let what = noprefix["weatheralias ".len()..].trim().to_string();
-                command_weather_alias(&server, &chan, what);
+		let what = noprefix["weatheralias ".len()..].trim().to_string();
+		command_weather_alias(&server, &chan, what);
 		return;
-        }
+	}
+	else if cmd_check(&noprefixbytes, "raw ", false) {
+		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
+			return;
+		}
+		let what = noprefix["raw ".len()..].trim().to_string();
+		do_raw(&server, &what[..]);
+		return;
+	}
+}
+
+fn do_raw(server: &IrcServer, data: &str) {
+	let dome = irc::client::data::command::Command::Raw(data.to_string().clone(), vec![], None);
+	if !server.send(dome).is_ok() {
+		println!("got some sort of error in processing a raw command");
+	}
+	return;
 }
 
 fn command_fitectl(server: &IrcServer, chan: &String, nick: &String, args: String) {
@@ -1206,7 +1222,7 @@ fn command_klingon(server: &IrcServer, chan: &String, english: String) {
 	let captwo = reg.captures(translations[1].as_str());
 	let tlh = capone.unwrap().at(1).unwrap_or("wtf?!");
 	let qaak = captwo.unwrap().at(1).unwrap_or("wtf?!");
-	let _ = server.send_privmsg(&chan, format!("{} ({})    ", tlh, qaak).as_str());
+	let _ = server.send_privmsg(&chan, format!("{} ({})	", tlh, qaak).as_str());
 	return;
 }
 
@@ -1259,7 +1275,7 @@ fn command_roll(server: &IrcServer, chan: &String, args: String) {
 	}
 	else if side < 1 || dice < 1 || throw < 1 {
 		let _ = server.send_privmsg(&chan, format!("chromas, is that you? stop being a wiseass.").as_str());
-                return;
+				return;
 	}
 
 	for pass in 1..throw {
@@ -1536,13 +1552,13 @@ fn command_fake_weather_add(server: &IrcServer, chan: &String, what: String) {
 					println!("{}", err);
 					let _ = server.send_privmsg(&chan, "Error writing to fake_weather table.");
 					return;
-                },
-                Ok(_) => {
+				},
+				Ok(_) => {
 					let entry: CacheEntry = CacheEntry {
 						age: std::i64::MAX,
 						location: location.clone(),
 						weather: weather.clone(),
-                	};
+					};
 					match WUCACHE.lock() {
 						Err(err) => {
 							println!("Could not lock WUCACHE: {:?}", err);
@@ -1555,7 +1571,7 @@ fn command_fake_weather_add(server: &IrcServer, chan: &String, what: String) {
 					let sayme: String = format!("\"{}\" added.", location);
 					let _ = server.send_privmsg(&chan, &sayme);
 					return;
-                },
+				},
 			};
 		},
 	};
@@ -1563,11 +1579,11 @@ fn command_fake_weather_add(server: &IrcServer, chan: &String, what: String) {
 
 fn command_weather_alias(server: &IrcServer, chan: &String, walias: String) {
 	if !sql_table_check("weather_aliases".to_string()) {
-        println!("weather_aliases table not found, creating...");
-        if !sql_table_create("weather_aliases".to_string()) {
-            let _ = server.send_privmsg(&chan, "No weather_aliases table exists and for some reason I cannot create one");
-            return;
-        }
+		println!("weather_aliases table not found, creating...");
+		if !sql_table_create("weather_aliases".to_string()) {
+			let _ = server.send_privmsg(&chan, "No weather_aliases table exists and for some reason I cannot create one");
+			return;
+		}
 	}
 	
 	let mut colon = walias.find(':').unwrap_or(walias.len());
@@ -1601,13 +1617,13 @@ fn command_weather_alias(server: &IrcServer, chan: &String, walias: String) {
 				Err(err) => {
 					println!("{}", err);
 					let _ = server.send_privmsg(&chan, "Error writing to weather_aliases table.");
-                    return;
-                },
-                Ok(_) => {
-                    let sayme: String = format!("\"{}\" added.", flocation);
-                    let _ = server.send_privmsg(&chan, &sayme);
-                    return;
-                },
+					return;
+				},
+				Ok(_) => {
+					let sayme: String = format!("\"{}\" added.", flocation);
+					let _ = server.send_privmsg(&chan, &sayme);
+					return;
+				},
 			};
 		},
 	};
@@ -1816,9 +1832,9 @@ fn prime_weather_cache() {
 		Ok(conn) => {
 			let mut statement = format!("SELECT count(*) FROM {}", &table);
 			let result: i32 = conn.query_row(statement.as_str(), &[], |row| {
-                        row.get(0)
+						row.get(0)
 			}).unwrap();
-	        if result == 0 {
+			if result == 0 {
 				return;
 			}
 
@@ -1827,8 +1843,8 @@ fn prime_weather_cache() {
 			let allrows = stmt.query_map(&[], |row| {
 				CacheEntry {
 					age: std::i64::MAX,
-	                location: row.get(0),
-        	        weather: row.get(1),
+					location: row.get(0),
+					weather: row.get(1),
 				}
 			}).unwrap();
 
@@ -1962,9 +1978,9 @@ fn get_help(prefix: &String, command: Option<String>) -> String {
 		"quit" => format!("Pretty self-explanatory"),
 		"reloadregexes" => format!("Reloads the regexes for matching title and description of a page for {}submit from disk", prefix),
 		"nelson" => format!("{}nelson <with or without a nick>", prefix),
-        "fitectl" => format!("{}fitectl status/scoreboard/weapon <something>/armor <something>", prefix),
-        "fite" => format!("Fite someone in #fite. {}fite <nick>", prefix),
-        "goodfairy" => format!("Revive everyone in the {}prefix fite game. Admin only.", prefix),
+		"fitectl" => format!("{}fitectl status/scoreboard/weapon <something>/armor <something>", prefix),
+		"fite" => format!("Fite someone in #fite. {}fite <nick>", prefix),
+		"goodfairy" => format!("Revive everyone in the {}prefix fite game. Admin only.", prefix),
 		_ => format!("{}{} is not a currently implemented command", prefix, inside),
 	}
 }
@@ -2627,7 +2643,7 @@ fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, timer: &TimerTyp
 			return every.clone() as u64;
 		},
 		&TimerTypes::Sendping { ref doping } => {
-            if !doping { return 0_u64; }
+			if !doping { return 0_u64; }
 			let timer = Timer {
 				delay: 0,
 				action: TimerTypes::Feedback{
@@ -2976,13 +2992,13 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, attacker: &String, target: 
 	};
 	let _ = timertx.send(saveTimer);
 	// Send a timer to the timer handling thread with msgDelay + 100 delay so it fires just after the last
-        let timer = Timer {
-                delay: msgDelay + 1100_u64,
-                action: TimerTypes::Sendping {
-                        doping: true,
-                },
-        };
-        let _ = timertx.send(timer);
+	let timer = Timer {
+			delay: msgDelay + 1100_u64,
+			action: TimerTypes::Sendping {
+					doping: true,
+			},
+	};
+	let _ = timertx.send(timer);
 	return true;
 }
 
@@ -3005,7 +3021,7 @@ fn roll_once(sides: u8) -> u8 {
 	let mut rng = rand::thread_rng();
 	let random = rng.gen::<u64>();
 	let mut roll = (random % (sides as u64)) as u8;
-    roll += 1;
+	roll += 1;
 	return roll;
 }
 
