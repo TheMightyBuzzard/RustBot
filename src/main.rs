@@ -2,42 +2,119 @@
 extern crate curl;
 extern crate irc;
 extern crate rusqlite;
+extern crate serde;
+extern crate serde_json;
 extern crate rustc_serialize;
 extern crate regex;
 extern crate time;
 extern crate rand;
+
+#[macro_use]
+extern crate serde_derive;
+
+#[macro_use]
+extern crate lazy_static;
 
 use std::{env, thread, str};
 use std::process::exit;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufRead, Write};
 use std::sync::mpsc::Sender;
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex, Arc};
 use std::time::Duration;
 use regex::Regex;
 use curl::easy::{Easy, List};
 use irc::client::prelude::*;
+use serde_json::Value;
 use rustc_serialize::json::Json;
 use rusqlite::Connection;
 use rand::Rng;
 
-#[derive(Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 struct BotConfig {
+	owners: Vec<String>,
 	nick: String,
 	altn1: String,
 	altn2: String,
 	server: String,
-	channel: String,
+    port: u16,
+	channels: Vec<String>,
+	protected: Vec<String>,
 	prefix: String,
-	admin: String,
-	snpass: String,
-	snuser: String,
-	cookie: String,
+	pass: String,
 	wu_key: String,
 	go_key: String,
 	bi_key: String,
 	cse_id: String,
+}
+
+impl BotConfig {
+	pub fn new() -> BotConfig {
+		BotConfig {
+			owners: Vec::new(),
+			nick: "".to_string(),
+			altn1: "".to_string(),
+			altn2: "".to_string(),
+			server: "".to_string(),
+			port: 0_u16,
+			channels: Vec::new(),
+			protected: Vec::new(),
+			prefix: "".to_string(),
+			pass: "".to_string(),
+			wu_key: "".to_string(),
+			go_key: "".to_string(),
+			bi_key: "".to_string(),
+			cse_id: "".to_string(),
+		}
+	}
+	pub fn load(&mut self, new: BotConfig) {
+		self.owners = new.owners;
+		self.nick = new.nick;
+		self.altn1 = new.altn1;
+		self.altn2 = new.altn2;
+		self.server = new.server;
+		self.port = new.port;
+		self.channels = new.channels;
+		self.protected = new.protected;
+		self.prefix = new.prefix;
+		self.pass = new.pass;
+		self.wu_key = new.wu_key;
+		self.go_key = new.go_key;
+		self.bi_key = new.bi_key;
+		self.cse_id = new.cse_id;
+	}
+	// TODO: write a saving command
+	/*
+	pub fn save(self) {
+		let bot_config = format!("/home/bob/etc/snbot/config.json");
+		match File::create(&bot_config) {
+	        Ok(file) => {
+				let _ = serde_json::to_writer_pretty(file, &self);
+		    },
+	        Err(err) => {
+			    println!("error creating BotConfig file: {:?}", err);
+		    },
+	    };
+	}
+	*/
+	pub fn destroy(self) {
+		let _ = self;
+	}
+}
+
+#[derive(Debug, Clone)]
+struct BotState {
+	cookie: String,
 	is_fighting: bool,
+}
+
+impl BotState {
+	pub fn new() -> BotState {
+		BotState {
+			cookie: "".to_string(),
+			is_fighting: false,
+		}
+	}
 }
 
 #[derive(Debug)]
@@ -45,22 +122,6 @@ struct CacheEntry {
 	age: i64,
 	location: String,
 	weather: String,
-}
-
-struct Storables {
-	wucache: Vec<CacheEntry>,
-	botconfig: BotConfig,
-	server: IrcServer,
-	conn: Connection,
-	titleres: Vec<Regex>,
-	descres: Vec<Regex>,
-	channels: Vec<MyChannel>,
-}
-
-#[derive(Debug)]
-struct MyChannel {
-	name: String,
-	protected: bool,
 }
 
 #[derive(Debug)]
@@ -102,8 +163,19 @@ struct Timer {
 	action: TimerTypes,
 }
 
+const VERSION: &str = "0.2.0";
+const SOURCE: &str = "https://github.com/TheMightyBuzzard/RustBot";
 const DEBUG: bool = false;
 const ARMOR_CLASS: u8 = 10;
+
+lazy_static! {
+	static ref BOTCONFIG: Arc<Mutex<BotConfig>> = Arc::new(Mutex::new(BotConfig::new()));
+	static ref BOTSTATE: Arc<Mutex<BotState>> = Arc::new(Mutex::new(BotState::new()));
+	static ref CONN: Arc<Mutex<Connection>> = Arc::new(Mutex::new(Connection::open("/home/bob/etc/snbot/usersettings.db").unwrap()));
+	static ref TITLERES: Arc<Mutex<Vec<Regex>>> = Arc::new(Mutex::new(vec![]));
+	static ref DESCRES: Arc<Mutex<Vec<Regex>>> = Arc::new(Mutex::new(vec![]));
+	static ref WUCACHE: Arc<Mutex<Vec<CacheEntry>>> = Arc::new(Mutex::new(vec![]));
+}
 
 fn main() {
 	let args: Vec<_> = env::args().collect();
@@ -112,88 +184,66 @@ fn main() {
 		exit(0);
 	}
 	let thisbot = args[1].clone();
-	let mut wucache: Vec<CacheEntry> = vec![];
-	let conn = Connection::open("/home/bob/etc/snbot/usersettings.db").unwrap();
-	if !sql_table_check(&conn, "bot_config".to_string()) {
-		println!("`bot_config` table not found, creating...");
-		if !sql_table_create(&conn, "bot_config".to_string()) {
-			println!("No bot_config table exists and for some reason I cannot create one");
+	prime_weather_cache();
+	load_titleres();
+	load_descres();
+
+	{
+		let botconfig: BotConfig = get_bot_config(&thisbot);
+		match BOTCONFIG.lock() {
+			Err(err) => {
+				println!("Error locking BOTCONFIG: {:?}", err);
+				exit(1);
+			},
+			Ok(mut cfg) => cfg.load(botconfig),
+		};
+	}
+
+	// Create a temporary variable 
+	let mut botconfig: BotConfig = BotConfig::new();
+	{
+		match BOTCONFIG.lock() {
+			Err(err) => {
+				println!("Error locking BOTCONFIG: {:?}", err);
+				exit(1);
+			},
+			Ok(cfg) => botconfig.load(cfg.clone()),
+		};
+	}
+
+	// TODO get rid of storables
+	let server = IrcServer::from_config(
+		irc::client::data::config::Config {
+			owners: Some(botconfig.owners.clone()),
+			nickname: Some(botconfig.nick.clone()),
+			alt_nicks: Some(vec!(botconfig.altn1.clone(), botconfig.altn2.clone())),
+			username: Some(botconfig.nick.clone()),
+			realname: Some(botconfig.nick.clone()),
+			server: Some(botconfig.server.clone()),
+			port: Some(6667),
+			password: Some(botconfig.pass.clone()),
+			use_ssl: Some(false),
+			encoding: Some("UTF-8".to_string()),
+			version: Some(VERSION.to_string()),
+			source: Some(SOURCE.to_string()),
+			channels: Some(botconfig.channels.clone()),
+			channel_keys: None,
+			umodes: Some("+Zix".to_string()),
+			user_info: Some("MrPlow rewritten in Rust".to_string()),
+			ping_time: Some(180),
+			ping_timeout: Some(10),
+			ghost_sequence: Some(vec!("RECOVER".to_string())),
+			should_ghost: Some(true),
+			nick_password: Some(botconfig.pass.clone()),
+			options: None
 		}
-		exit(1);
-	}
-	if !sql_table_check(&conn, "channels".to_string()) {
-		println!("`channels` table not found, creating...");
-		if !sql_table_create(&conn, "channels".to_string()) {
-			println!("No channels table exists and for some reason I cannot create one");
-		}
-		exit(1);
-	}
-	prime_weather_cache(&conn, &mut wucache);
-	let botconfig = conn.query_row("SELECT nick, server, channel, prefix, admin_hostmask, snpass, snuser, cookiefile, wu_api_key, google_key, bing_key, g_cse_id FROM bot_config WHERE nick = ?", &[&thisbot], |row| {
-			BotConfig {
-				nick: row.get(0),
-				altn1: row.get(0),
-				altn2: row.get(0),
-				server: row.get(1),
-				channel: row.get(2),
-				prefix: row.get(3),
-				admin: row.get(4),
-				snpass: row.get(5),
-				snuser: row.get(6),
-				cookie: "".to_string(),
-				wu_key: row.get(8),
-				go_key: row.get(9),
-				bi_key: row.get(10),
-				cse_id: row.get(11),
-				is_fighting: false,
-			}
-		}).unwrap();
-	let channels = load_channels(&conn);
-	let mut vChannels: Vec<String> = Vec::new();
-	vChannels.push(botconfig.channel.clone());
-	for channel in channels.iter() {
-		vChannels.push(channel.name.clone());
-	}
-	let mut storables: Storables = Storables {
-		wucache: wucache,
-		conn: Connection::open("/home/bob/etc/snbot/usersettings.db").unwrap(),
-		botconfig: botconfig.clone(),
-		server: IrcServer::from_config(
-				irc::client::data::config::Config {
-					owners: None,
-					nickname: Some(botconfig.nick.clone()),
-					alt_nicks: Some(vec!(botconfig.altn1.clone(), botconfig.altn2.clone())),
-					username: Some(botconfig.nick.clone()),
-					realname: Some(botconfig.nick.clone()),
-					server: Some(botconfig.server.clone()),
-					port: Some(6667),
-					password: Some(botconfig.snpass.clone()),
-					use_ssl: Some(false),
-					encoding: Some("UTF-8".to_string()),
-					//channels: Some(vec!(botconfig.channel.clone())),
-					version: None,
-					source: None,
-					channels: Some(vChannels),
-					channel_keys: None,
-					umodes: Some("+Zix".to_string()),
-					user_info: Some("MrPlow rewritten in Rust".to_string()),
-					ping_time: Some(180),
-					ping_timeout: Some(10),
-					ghost_sequence: Some(vec!("RECOVER".to_string())),
-					should_ghost: Some(true),
-					nick_password: Some(botconfig.snpass.clone()),
-					options: None
-			}).unwrap(),
+	).unwrap();
+	botconfig.destroy();
 
-		titleres: load_titleres(None),
-		descres: load_descres(None),
-		channels: load_channels(&conn),
-	};
 
-	let recurringTimers: Vec<TimerTypes> = get_recurring_timers(&conn);
+	let recurringTimers: Vec<TimerTypes> = get_recurring_timers();
 
-	storables.server.identify().unwrap();
-	let _ = conn.close();
+	server.identify().unwrap();
 
 	// Feedback channel that any thread can write to?
 	let (feedbacktx, feedbackrx) = mpsc::channel::<Timer>();
@@ -201,7 +251,7 @@ fn main() {
 	// Spin off a submitter listening thread
 	let (subtx, subrx) = mpsc::channel::<Submission>();
 	{	
-		let server = storables.server.clone();
+		let server = server.clone();
 		let _ = thread::spawn(move || {
 			loop {
 				for submission in subrx.recv() {
@@ -224,7 +274,7 @@ fn main() {
 	// Spin off a timed event thread
 	let (timertx, timerrx) = mpsc::channel::<Timer>();
 	{
-		let server = storables.server.clone();
+		let server = server.clone();
 		let _ = thread::spawn(move || {
 			let mut qTimers: Vec<Timer> = Vec::new();
 			for timer in recurringTimers {
@@ -242,7 +292,6 @@ fn main() {
 					_ => {},
 				};
 			}
-			let conn = Connection::open("/home/bob/etc/snbot/usersettings.db").unwrap();
 			let tenthSecond = Duration::from_millis(100);
 			loop {
 				match timerrx.try_recv() {
@@ -266,7 +315,7 @@ fn main() {
 						
 						// Now handle any timers that are at zero
 						if timer.delay == 0 {
-							timer.delay = handle_timer(&server, &feedbacktx, &conn, &timer.action);
+							timer.delay = handle_timer(&server, &feedbacktx, &timer.action);
 						}
 					}
 					
@@ -282,7 +331,7 @@ fn main() {
     // let's have us some async Message handling
     let (msgtx, msgrx) = mpsc::channel::<irc::client::data::Message>();
     {	
-		let server = storables.server.clone();
+		let server = server.clone();
 		let _ = thread::spawn(move || {
 			for message in server.iter() {
                 let umsg = message.unwrap();
@@ -307,40 +356,41 @@ fn main() {
             Err(err) => {
                 match err {
                     std::sync::mpsc::TryRecvError::Empty => {thread::sleep(onems);},
-                    std::sync::mpsc::TryRecvError::Disconnected => { exit(1); },
+                    std::sync::mpsc::TryRecvError::Disconnected => {
+                        println!("Lost socket to message iterator thread, shutting down!");
+                        exit(1);
+                    },
                 };
             },
             Ok(umessage) => {
-    	    	let mut chan: String = "foo".to_string();
-	    	    let mut said: String = "bar".to_string();
 	    	    let nick = umessage.source_nickname();
         		let snick: String;
 	    	    match umessage.command {
-	        		irc::client::data::command::Command::PRIVMSG(ref c, ref d) => {
-    		    		splitprivmsg(&mut chan, &mut said, &c, &d);
-				        said = said.trim_right().to_string();
+	        		irc::client::data::command::Command::PRIVMSG(ref chan, ref untrimmed) => {
+				        let said = untrimmed.trim_right().to_string();
 			    	    let hostmask = umessage.prefix.clone().unwrap().to_string();
     		    		snick = nick.unwrap().to_string();
 	        			println!("{:?}", umessage);
-        
-		    	    	if check_messages(&storables.conn, &snick) {
-		        			deliver_messages(&storables.server, &storables.conn, &snick);
-	    		    	}
+
+		    	    	if check_messages(&snick) {
+		        			deliver_messages(&server, &snick);
+				    	}
+
     
     				    if is_action(&said) {
 					        let mut asaid = said.clone();
     				    	asaid = asaid[8..].to_string();
 	    		    		let asaidend = asaid.len() - 1;
 		        			asaid = asaid[..asaidend].to_string();
-	    	    			log_seen(&storables, &chan, &snick, &hostmask, &asaid, 1);
-    			    		process_action(&storables, &snick, &chan, &said);
+	    	    			log_seen(&chan, &snick, &hostmask, &asaid, 1);
+    			    		process_action(&server, &snick, &chan, &said);
 				        }
-    			    	else if is_command(&mut storables.botconfig.prefix, &said) {
-	    	    			process_command(&mut storables.titleres, &mut storables.descres, &mut storables.channels, &storables.server, &subtx, &timertx, &storables.conn, &mut storables.wucache, &mut storables.botconfig, &snick, &hostmask, &chan, &said);
-	        				log_seen(&storables, &chan, &snick, &hostmask, &said, 0);
+    			    	else if is_command(&said) {
+	    	    			process_command(&server, &subtx, &timertx, &snick, &hostmask, &chan, &said);
+	        				log_seen(&chan, &snick, &hostmask, &said, 0);
     		    		}
 				        else {
-			    	    	log_seen(&storables, &chan, &snick, &hostmask, &said, 0);
+			    	    	log_seen(&chan, &snick, &hostmask, &said, 0);
 		    			    continue;
     	    			}
         			},
@@ -356,7 +406,10 @@ fn main() {
     		    					TimerTypes::Feedback {ref command} => {
 				    			    	match &command[..] {
 					    	    			"fiteoff" => {
-					        					storables.botconfig.is_fighting = false;
+												match BOTSTATE.lock() {
+													Err(err) => println!("Error locking BOTSTATE: {:?}", err),
+													Ok(mut botstate) => botstate.is_fighting = false,
+												};
 				    		    			},
 			    				    		_ => {},
 		    						    };
@@ -376,9 +429,32 @@ fn main() {
 	}
 }
 
-fn splitprivmsg(chan: &mut String, said: &mut String, c: &String, d: &String) {
-	*chan = c.clone();
-	*said = d.clone();
+fn get_bot_config(botnick: &String) -> BotConfig {
+	let bot_config = format!("/home/bob/etc/snbot/config.json");
+	match File::open(&bot_config) {
+		Ok(file) => {
+			match serde_json::from_reader(file) {
+				Ok(configs) => {
+					let allconfigs: Value = configs;
+					match serde_json::from_value(allconfigs[&botnick[..]].clone()) {
+						Ok(config) => return config,
+						Err(err) => {
+							println!("{:?}", err);
+							exit(1);
+						},
+					};
+				},
+				Err(err) => {
+					println!("Could not read from {}: {:?}", &bot_config, err);
+					exit(1);
+				},
+			};
+		},
+		Err(err) => {
+			println!("Could not open {}: {:?}", &bot_config, err);
+			exit(1);
+		},
+	};
 }
 
 fn is_action(said: &String) -> bool {
@@ -396,7 +472,12 @@ fn is_action(said: &String) -> bool {
 	false
 }
 
-fn is_command(prefix: &String, said: &String) -> bool {
+fn is_command(said: &String) -> bool {
+	let mut prefix = "💩💩💩".to_string();
+	match BOTCONFIG.lock() {
+		Err(err) => println!("Could not lock BOTCONFIG: {:?}", err),
+		Ok(botconfig) => prefix = botconfig.prefix.clone(),
+	};
 	if said.len() < prefix.len() {
 		return false;
 	}
@@ -410,14 +491,17 @@ fn is_command(prefix: &String, said: &String) -> bool {
 	false
 }
 
-fn log_seen(storables: &Storables, chan: &String, snick: &String, hostmask: &String, said: &String, action: i32) {
-	let conn = &storables.conn;
-	let time: i64 = time::now_utc().to_timespec().sec;
-	conn.execute("REPLACE INTO seen VALUES($1, $2, $3, $4, $5, $6)", &[snick, hostmask, chan, said, &time, &action]).unwrap();
+fn log_seen(chan: &String, snick: &String, hostmask: &String, said: &String, action: i32) {
+	match CONN.lock() {
+		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Ok(conn) => {
+			let time: i64 = time::now_utc().to_timespec().sec;
+			conn.execute("REPLACE INTO seen VALUES($1, $2, $3, $4, $5, $6)", &[snick, hostmask, chan, said, &time, &action]).unwrap();
+		},
+	};
 }
 
-fn process_action(storables: &Storables, nick: &String, channel: &String, said: &String) {
-	let server = &storables.server;
+fn process_action(server: &IrcServer, nick: &String, channel: &String, said: &String) {
 	let prefix = "\u{1}ACTION ".to_string();
 	let prefixlen = prefix.len();
 	let end = said.len() - 1;
@@ -452,41 +536,53 @@ fn cmd_check(checkme: &[u8], against: &str, exact: bool) -> bool {
 	}
 }
 
-fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, channels: &mut Vec<MyChannel>, server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sender<Timer>, conn: &Connection, mut wucache: &mut Vec<CacheEntry>, mut botconfig: &mut BotConfig, nick: &String, hostmask: &String, chan: &String, said: &String) {
+fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sender<Timer>, nick: &String, hostmask: &String, chan: &String, said: &String) {
+	let prefix: String;
+
+	{
+		match BOTCONFIG.lock() {
+			Err(err) => {
+				println!("Could not lock BOTCONFIG: {:?}", err);
+				return;
+			},
+			Ok(botconfig) => {
+				prefix = botconfig.prefix.clone();
+			},
+		};
+	}
 	let maskonly = hostmask_only(&hostmask);
-	let prefix = botconfig.prefix.clone();
 	let prefixlen = prefix.len();
 	let saidlen = said.len();
 	let csaid: String = said.clone();
 	let noprefix: String = csaid[prefixlen..saidlen].to_string().trim().to_string();
 	let noprefixbytes = noprefix.as_bytes();
 	if cmd_check(&noprefixbytes, "quit", true) {
-		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
+		if !is_admin(&nick) {
 			return;
 		}
 		command_quit(server, chan.to_string());
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "pissoff", true) {
-		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
+		if !is_admin(&nick) {
 			return;
 		}
 		command_pissoff(server, chan.to_string());
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "dieinafire", true) {
-		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
+		if !is_admin(&nick) {
 			return;
 		}
 		command_dieinafire(server, chan.to_string());
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "join", true) || cmd_check(&noprefixbytes, "join #", false) {
-		if is_abuser(&server, &conn, &chan, &maskonly) {
+		if is_abuser(&server, &chan, &maskonly) {
 			return;
 		}
 		if noprefix.as_str() == "join" {
-			command_help(&server, &botconfig, &chan, Some("join".to_string()));
+			command_help(&server, &chan, Some("join".to_string()));
 			return;
 		}
 		let joinchan = noprefix["join ".len()..].trim().to_string();
@@ -495,45 +591,45 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 	}
 	else if cmd_check(&noprefixbytes, "seen", true) || cmd_check(&noprefixbytes, "seen ", false) {
 		if noprefix.as_str() == "seen" {
-			command_help(&server, &botconfig, &chan, Some("seen".to_string()));
+			command_help(&server, &chan, Some("seen".to_string()));
 			return;
 		}
 		let who = noprefix["seen ".len()..].trim().to_string();
-		command_seen(&server, &conn, &chan, who);
+		command_seen(&server, &chan, who);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "smakeadd", true) || cmd_check(&noprefixbytes, "smakeadd ", false) {
-		if is_abuser(&server, &conn, &chan, &maskonly) {
+		if is_abuser(&server, &chan, &maskonly) {
 			return;
 		}
 		if noprefix.as_str() == "smakeadd" {
-			command_help(&server, &botconfig, &chan, Some("smakeadd".to_string()));
+			command_help(&server, &chan, Some("smakeadd".to_string()));
 			return;
 		}
 		let what = noprefix["smakeadd ".len()..].trim().to_string();
-		command_smakeadd(&server, &conn, &chan, what);
+		command_smakeadd(&server, &chan, what);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "smake", true) || cmd_check(&noprefixbytes, "smake ", false) {
 		if noprefix.as_str() == "smake" {
-			command_help(&server, &botconfig, &chan, Some("smake".to_string()));
+			command_help(&server, &chan, Some("smake".to_string()));
 			return;
 		}
 		let who = noprefix["smake ".len()..].trim().to_string();
-		command_smake(&server, &conn, &chan, who);
+		command_smake(&server, &chan, who);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "weatheradd", true) || cmd_check(&noprefixbytes, "weatheradd ", false) {
 		if noprefix.len() < "weatheradd 12345".len() {
-			command_help(&server, &botconfig, &chan, Some("weatheradd".to_string()));
+			command_help(&server, &chan, Some("weatheradd".to_string()));
 			return;
 		}
 		let checklocation = noprefix["weatheradd ".len()..].trim().to_string();
-		command_weatheradd(&server, &conn, &nick, &chan, checklocation);
+		command_weatheradd(&server, &nick, &chan, checklocation);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "weather", true) || cmd_check(&noprefixbytes, "weather ", false) {
-		if is_abuser(&server, &conn, &chan, &maskonly) {
+		if is_abuser(&server, &chan, &maskonly) {
 			return;
 		}
 		let checklocation: Option<String>;
@@ -543,55 +639,57 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 		else {
 			checklocation = Some(noprefix["weather ".len()..].trim().to_string());
 		}
-		command_weather(&botconfig, &server, &conn, &mut wucache, &nick, &chan, checklocation);
+		command_weather(&server, &nick, &chan, checklocation);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "abuser", true) || cmd_check(&noprefixbytes, "abuser ", false) {
-		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
+		if !is_admin(&nick) {
 			return;
 		}
 		if noprefix.as_str() == "abuser" {
-			command_help(&server, &botconfig, &chan, Some("abuser".to_string()));
+			command_help(&server, &chan, Some("abuser".to_string()));
 			return;
 		}
 		let abuser = noprefix["abuser ".len()..].trim().to_string();
-		command_abuser(&server, &conn, &chan, abuser);
+		command_abuser(&server, &chan, abuser);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "bot", true) || cmd_check(&noprefixbytes, "bot ", false) {
-		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
+		if !is_admin(&nick) {
 			return;
 		}
 		if noprefix.as_str() == "bot" {
-			command_help(&server, &botconfig, &chan, Some("bot".to_string()));
+			command_help(&server, &chan, Some("bot".to_string()));
 			return;
 		}
 		let bot = noprefix["bot ".len()..].trim().to_string();
-		command_bot(&server, &conn, &chan, bot);
+		command_bot(&server, &chan, bot);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "admin", true) || cmd_check(&noprefixbytes, "admin ", false) {
-		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
+		if !is_admin(&nick) {
 			return;
 		}
+		// TODO write to current BotConfig then save it
+		/*
 		if noprefix.as_str() == "admin" {
-			command_help(&server, &botconfig, &chan, Some("admin".to_string()));
+			command_help(&server, &chan, Some("admin".to_string()));
 			return;
 		}
 		let admin = noprefix["admin ".len()..].trim().to_string();
-		command_admin(&server, &conn, &chan, admin);
+		command_admin(&server, &chan, admin);*/
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "submit", true) || cmd_check(&noprefixbytes, "submit ", false) {
-		if is_abuser(&server, &conn, &chan, &maskonly) {
+		if is_abuser(&server, &chan, &maskonly) {
 			return;
 		}
 		if noprefix.find("http").is_none() {
-			command_help(&server, &botconfig, &chan, Some("submit".to_string()));
+			command_help(&server, &chan, Some("submit".to_string()));
 			return;
 		}
 		let (suburl, summary) = sub_parse_line(&noprefix);
-		command_submit(&mut botconfig, titleres, descres, &server, &chan, &subtx, suburl, summary, &nick);
+		command_submit(&server, &chan, &subtx, suburl, summary, &nick);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "help", true) || cmd_check(&noprefixbytes, "help ", false) {
@@ -602,36 +700,36 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 		else {
 			command = Some(noprefix["help ".len()..].trim().to_string());
 		}
-		command_help(&server, &botconfig, &chan, command);
+		command_help(&server, &chan, command);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "youtube", true) || cmd_check(&noprefixbytes, "youtube ", false) {
-		if is_abuser(&server, &conn, &chan, &maskonly) {
+		if is_abuser(&server, &chan, &maskonly) {
 			return;
 		}
 		if noprefix.as_str() == "youtube" {
-			command_help(&server, &botconfig, &chan, Some("youtube".to_string()));
+			command_help(&server, &chan, Some("youtube".to_string()));
 			return;
 		}
 		let query: String = noprefix["youtube ".len()..].trim().to_string();
-		command_youtube(&server, &botconfig, &chan, query);
+		command_youtube(&server, &chan, query);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "yt", true) || cmd_check(&noprefixbytes, "yt ", false) {
-		if is_abuser(&server, &conn, &chan, &maskonly) {
+		if is_abuser(&server, &chan, &maskonly) {
 			return;
 		}
 		if noprefix.as_str() == "yt" {
-			command_help(&server, &botconfig, &chan, Some("youtube".to_string()));
+			command_help(&server, &chan, Some("youtube".to_string()));
 			return;
 		}
 		let query: String = noprefix["yt ".len()..].trim().to_string();
-		command_youtube(&server, &botconfig, &chan, query);
+		command_youtube(&server, &chan, query);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "socialist", true) || cmd_check(&noprefixbytes, "socialist ", false) {
 		if noprefix.as_str() == "socialist" {
-			command_help(&server, &botconfig, &chan, Some("socialist".to_string()));
+			command_help(&server, &chan, Some("socialist".to_string()));
 			return;
 		}
 		let _ = server.send_privmsg(&chan, format!("{}, you're a socialist!", &noprefix["socialist ".len()..].trim()).as_str());
@@ -639,11 +737,11 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 	}
 	else if cmd_check(&noprefixbytes, "roll", true) || cmd_check(&noprefixbytes, "roll ", false) {
 		if noprefix.as_str() == "roll" {
-			command_help(&server, &botconfig, &chan, Some("roll".to_string()));
+			command_help(&server, &chan, Some("roll".to_string()));
 			return;
 		}
 		let args = noprefix["roll ".len()..].trim().to_string();
-		command_roll(&server, &botconfig, &chan, args);
+		command_roll(&server, &chan, args);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "bnk", true) {
@@ -653,7 +751,7 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 	else if cmd_check(&noprefixbytes, "part", true) || cmd_check(&noprefixbytes, "part ", false) {
 		if noprefix.as_str() == "part" {
 			let partchan = chan.clone();
-			command_part(&server, &channels, &chan, partchan);
+			command_part(&server, &chan, partchan);
 		}
 		else {
 			let mut partchan = noprefix["part ".len()..].trim().to_string();
@@ -662,16 +760,16 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 				let end = sp.unwrap();
 				partchan = partchan[..end].trim().to_string();
 			}
-			command_part(&server, &channels, &chan, partchan);
+			command_part(&server, &chan, partchan);
 		}
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "say", true) || cmd_check(&noprefixbytes, "say ", false) {
-		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
+		if !is_admin(&nick) {
 			return;
 		}
 		if noprefix.as_str() == "say" {
-			command_help(&server, &botconfig, &chan, Some("say".to_string()));
+			command_help(&server, &chan, Some("say".to_string()));
 			return;
 		}
 		let nocommand = noprefix["say ".len()..].trim().to_string();
@@ -683,101 +781,119 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 	}
 	else if cmd_check(&noprefixbytes, "tell", true) || cmd_check(&noprefixbytes, "tell ", false) {
 		if noprefix.as_str() == "tell" {
-			command_help(&server, &botconfig, &chan, Some("tell".to_string()));
+			command_help(&server, &chan, Some("tell".to_string()));
 			return;
 		}
 		let space = noprefix.find(" ").unwrap_or(0);
 		if space == 0 { return; }
 		let nocommand = noprefix[space..].trim().to_string();
-		command_tell(&server, &conn, &chan, &nick, nocommand);
+		command_tell(&server, &chan, &nick, nocommand);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "klingon", true) || cmd_check(&noprefixbytes, "klingon ", false) {
 		if noprefix.as_str() == "klingon" {
-			command_help(&server, &botconfig, &chan, Some("klingon".to_string()));
+			command_help(&server, &chan, Some("klingon".to_string()));
 			return;
 		}
 		let english = noprefix["klingon ".len()..].trim().to_string();
-		command_klingon(&server, &botconfig, &chan, english);
+		command_klingon(&server, &chan, english);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "g", true) || cmd_check(&noprefixbytes, "g ", false) {
 		if noprefix.as_str() == "g" {
-			command_help(&server, &botconfig, &chan, Some("g".to_string()));
+			command_help(&server, &chan, Some("g".to_string()));
 			return;
 		}
 		let searchstr = noprefix["g ".len()..].trim().to_string();
-		command_google(&server, &botconfig, &chan, searchstr);
+		command_google(&server, &chan, searchstr);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "fite", true) || cmd_check(&noprefixbytes, "fite ", false) {
-		if noprefix.as_str() == "fite" {
-			command_help(&server, &botconfig, &chan, Some("fite".to_string()));
-			return;
-		}
-		if botconfig.is_fighting {
-			let msg = format!("There's already a fight going on. Wait your turn.");
-			let _ = server.send_privmsg(&chan, &msg);
-			return;
-		}
-		if &chan[..] != "#fite" {
-			let _ = server.send_privmsg(&chan, "#fite restricted to the channel #fite");
-			return;
-		}
-		botconfig.is_fighting = true;
-		let target = noprefix["fite ".len()..].trim().to_string();
-		let stop = command_fite(&server, &timertx, &conn, &chan, &nick, target);
-		// Stop fighting if we didn't actually have a fite
-		botconfig.is_fighting = stop;
-		if stop {
-			fitectl_scoreboard(&server, &conn, true);
-		}
-		return;
+		match BOTSTATE.lock() {
+			Err(err) => {
+				println!("Could not lock BOTSTATE: {:?}", err);
+				return;
+			},
+			Ok(mut botstate) => {
+				if noprefix.as_str() == "fite" {
+					command_help(&server, &chan, Some("fite".to_string()));
+					return;
+				}
+				if botstate.is_fighting {
+					let msg = format!("There's already a fight going on. Wait your turn.");
+					let _ = server.send_privmsg(&chan, &msg);
+					return;
+				}
+				if &chan[..] != "#fite" {
+					let _ = server.send_privmsg(&chan, "#fite restricted to the channel #fite");
+					return;
+				}
+				botstate.is_fighting = true;
+				let target = noprefix["fite ".len()..].trim().to_string();
+				let stop = command_fite(&server, &timertx, &chan, &nick, target);
+				// Stop fighting if we didn't actually have a fite
+				botstate.is_fighting = false;
+				if stop {
+					fitectl_scoreboard(&server, true);
+				}
+				return;
+			},
+		};
 	}
 	else if cmd_check(&noprefixbytes, "fitectl", true) || cmd_check(&noprefixbytes, "fitectl ", false) {
 		if noprefix.as_str() == "fitectl" { 
-			command_help(&server, &botconfig, &chan, Some("fitectl".to_string()));
+			command_help(&server, &chan, Some("fitectl".to_string()));
 			return;
 		}
-		if botconfig.is_fighting {
+		let is_fighting;
+		{
+			match BOTSTATE.lock() {
+				Err(err) => {
+					println!("Could not lock BOTSTATE: {:?}", err);
+					return;
+				},
+				Ok(botstate) => is_fighting = botstate.is_fighting,
+			};
+		}
+		if is_fighting {
 			let msg = format!("There's a fight going on. You'll have to wait.");
 			let _ = server.send_privmsg(&chan, &msg);
 			return;
 		}
 		let args = noprefix["fitectl ".len()..].trim().to_string();
-		command_fitectl(&server, &conn, &chan, &nick, args);
+		command_fitectl(&server, &chan, &nick, args);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "goodfairy", true) {
-		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
+		if !is_admin(&nick) {
                         return;
                 }
-		command_goodfairy(&server, &conn, &chan);
+		command_goodfairy(&server, &chan);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "reloadregexes", true) {
-		if !is_admin(&botconfig, &server, &conn, &chan, &maskonly) {
+		if !is_admin(&nick) {
 			return;
 		}
-		*titleres = load_titleres(None);
-		*descres = load_descres(None);
+		load_titleres();
+		load_descres();
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "fakeweather", true) || cmd_check(&noprefixbytes, "fakeweather ", false) {
-		if is_abuser(&server, &conn, &chan, &maskonly) {
+		if is_abuser(&server, &chan, &maskonly) {
 			return;
 		}
 		if noprefix.as_str() == "sammich" {
-			command_help(&server, &botconfig, &chan, Some("sammichadd".to_string()));
+			command_help(&server, &chan, Some("sammichadd".to_string()));
 			return;
 		}
 		let sammich = noprefix["sammichadd ".len()..].trim().to_string();
-		command_sammichadd(&server, &conn, &chan, sammich);
+		command_sammichadd(&server, &chan, sammich);
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "sammich", true) || cmd_check(&noprefixbytes, "sammich ", false) {
 		if noprefix.as_str() == "sammich" {
-			command_sammich(&server, &conn, &chan, &nick);
+			command_sammich(&server, &chan, &nick);
 		}
 		else {
 			command_sammich_alt(&server, &chan, &noprefix["sammich ".len()..].trim().to_string());
@@ -797,61 +913,69 @@ fn process_command(mut titleres: &mut Vec<Regex>, mut descres: &mut Vec<Regex>, 
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "fakeweather", true) || cmd_check(&noprefixbytes, "fakeweather ", false) {
-		if is_abuser(&server, &conn, &chan, &maskonly) {
+		if is_abuser(&server, &chan, &maskonly) {
                         return;
                 }
 		if noprefix.as_str() == "fakeweather" {
-			command_help(&server, &botconfig, &chan, Some("fakeweather".to_string()));
+			command_help(&server, &chan, Some("fakeweather".to_string()));
 			return;
 		}
                 let what = noprefix["fakeweather ".len()..].trim().to_string();
-                command_fake_weather_add(&server, &conn, &chan, what, &mut wucache);
+                command_fake_weather_add(&server, &chan, what);
 		return;
         }
 	else if cmd_check(&noprefixbytes, "weatheralias", true) || cmd_check(&noprefixbytes, "weatheralias ", false) {
-		if is_abuser(&server, &conn, &chan, &maskonly) {
+		if is_abuser(&server, &chan, &maskonly) {
 			return;
 		}
 		if noprefix.as_str() == "weatheralias" {
-	                command_help(&server, &botconfig, &chan, Some("weatheralias".to_string()));
+	                command_help(&server, &chan, Some("weatheralias".to_string()));
 			return;
 		}
                 let what = noprefix["weatheralias ".len()..].trim().to_string();
-                command_weather_alias(&botconfig, &server, &conn, &chan, what);
+                command_weather_alias(&server, &chan, what);
 		return;
         }
 }
 
-fn command_fitectl(server: &IrcServer, conn: &Connection, chan: &String, nick: &String, args: String) {
+fn command_fitectl(server: &IrcServer, chan: &String, nick: &String, args: String) {
 	let argsbytes = args.as_bytes();
 	if args.len() == 10 && &argsbytes[..] == "scoreboard".as_bytes() {
-		fitectl_scoreboard(&server, &conn, false);
+		fitectl_scoreboard(&server, false);
 	}
 	else if args.len() > 7 && &argsbytes[..6] == "armor ".as_bytes() {
 		let armor = args[5..].trim().to_string();
-		fitectl_armor(&server, &conn, &chan, &nick, armor);
+		fitectl_armor(&server, &chan, &nick, armor);
 	}
 	else if args.len() > 8 && &argsbytes[..7] == "weapon ".as_bytes() {
 		let weapon = args[7..].trim().to_string();
-		fitectl_weapon(&server, &conn, &chan, &nick, weapon);
+		fitectl_weapon(&server, &chan, &nick, weapon);
 	}
 	else if args.len() == 6 && &argsbytes[..6] == "status".as_bytes() {
-		fitectl_status(&server, &conn, &chan, &nick);
+		fitectl_status(&server, &chan, &nick);
 	}
 }
 
-fn command_goodfairy(server: &IrcServer, conn: &Connection, chan: &String) {
-	conn.execute("UPDATE characters SET hp = level + 10", &[]).unwrap();
-	let lucky: String = conn.query_row("SELECT nick FROM characters ORDER BY RANDOM() LIMIT 1", &[], |row| {
-		row.get(0)
-	}).unwrap();
-	conn.execute("UPDATE characters SET hp = level + 100 WHERE nick = ?", &[&lucky]).unwrap();
-	let _ = server.send_privmsg(&chan, "#fite The good fairy has come along and revived everyone");
-	let _ = server.send_privmsg(&chan, format!("#fite the gods have smiled upon {}", &lucky).as_str() );
-	fitectl_scoreboard(&server, &conn, true);
+fn command_goodfairy(server: &IrcServer, chan: &String) {
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return;
+		},
+		Ok(conn) => {
+			conn.execute("UPDATE characters SET hp = level + 10", &[]).unwrap();
+			let lucky: String = conn.query_row("SELECT nick FROM characters ORDER BY RANDOM() LIMIT 1", &[], |row| {
+				row.get(0)
+			}).unwrap();
+			conn.execute("UPDATE characters SET hp = level + 100 WHERE nick = ?", &[&lucky]).unwrap();
+			let _ = server.send_privmsg(&chan, "#fite The good fairy has come along and revived everyone");
+			let _ = server.send_privmsg(&chan, format!("#fite the gods have smiled upon {}", &lucky).as_str() );
+			fitectl_scoreboard(&server, true);
+		},
+	};
 }
 
-fn command_fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, chan: &String, attacker: &String, target: String) -> bool {
+fn command_fite(server: &IrcServer, timertx: &Sender<Timer>, chan: &String, attacker: &String, target: String) -> bool {
 	let blocklist = vec!["boru", "stderr"];
 	for checknick in blocklist.iter() {
 		if **checknick == *target.as_str() {
@@ -860,21 +984,21 @@ fn command_fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, 
 		}
 	}
 	if is_nick_here(&server, &chan, &target) {
-		if !sql_table_check(&conn, "characters".to_string()) {
+		if !sql_table_check("characters".to_string()) {
 			println!("`characters` table not found, creating...");
-			if !sql_table_create(&conn, "characters".to_string()) {
+			if !sql_table_create("characters".to_string()) {
 				let _ = server.send_privmsg(&chan, "No characters table exists and for some reason I cannot create one");
 				return false;
 			}
 		}
-		if !character_exists(&conn, &attacker) {
-			create_character(&conn, &attacker);
+		if !character_exists(&attacker) {
+			create_character(&attacker);
 		}
-		if !character_exists(&conn, &target) {
-			create_character(&conn, &target);
+		if !character_exists(&target) {
+			create_character(&target);
 		}
 
-		let returnme = fite(&server, &timertx, &conn, &attacker, &target);
+		let returnme = fite(&server, &timertx, &attacker, &target);
 		return returnme;
 	}
 	else {
@@ -884,51 +1008,65 @@ fn command_fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, 
 	}
 }
 
-fn command_sammichadd(server: &IrcServer, conn: &Connection, chan: &String, sammich: String) {
-	if !sql_table_check(&conn, "sammiches".to_string()) {
+fn command_sammichadd(server: &IrcServer, chan: &String, sammich: String) {
+	if !sql_table_check("sammiches".to_string()) {
 		println!("`sammiches` table not found, creating...");
-		if !sql_table_create(&conn, "sammiches".to_string()) {
+		if !sql_table_create("sammiches".to_string()) {
 			let _ = server.send_privmsg(&chan, "No sammiches table exists and for some reason I cannot create one");
 			return;
 		}
 	}
-	
-	match conn.execute("INSERT INTO sammiches VALUES(NULL, $1)", &[&sammich]) {
+	match CONN.lock() {
 		Err(err) => {
-			println!("{}", err);
-			let _ = server.send_privmsg(&chan, "Error writing to sammiches table.");
+			println!("Could not lock CONN: {:?}", err);
 			return;
 		},
-		Ok(_) => {
-			let sayme: String = format!("\"{}\" added.", sammich);
-			let _ = server.send_privmsg(&chan, &sayme);
-			return;
+		Ok(conn) => {
+			match conn.execute("INSERT INTO sammiches VALUES(NULL, $1)", &[&sammich]) {
+				Err(err) => {
+					println!("{}", err);
+					let _ = server.send_privmsg(&chan, "Error writing to sammiches table.");
+					return;
+				},
+				Ok(_) => {
+					let sayme: String = format!("\"{}\" added.", sammich);
+					let _ = server.send_privmsg(&chan, &sayme);
+					return;
+				},
+			};
 		},
 	};
 }
 
-fn command_sammich(server: &IrcServer, conn: &Connection, chan: &String, nick: &String) {
-	if !sql_table_check(&conn, "sammiches".to_string()) {
+fn command_sammich(server: &IrcServer, chan: &String, nick: &String) {
+	if !sql_table_check("sammiches".to_string()) {
 		println!("`sammiches` table not found, creating...");
-		if !sql_table_create(&conn, "sammiches".to_string()) {
+		if !sql_table_create("sammiches".to_string()) {
 			let _ = server.send_privmsg(&chan, "No sammiches table exists and for some reason I cannot create one");
 			return;
 		}
 	}
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return;
+		},
+		Ok(conn) => {
+			let check: i32 = conn.query_row("select count(*) from sammiches", &[], |row| {
+				row.get(0)
+			}).unwrap();
+			if check == 0 {
+				let _ = server.send_privmsg(&chan, "No sammiches in the database, add some.");
+			}
 
-	let check: i32 = conn.query_row("select count(*) from sammiches", &[], |row| {
-		row.get(0)
-	}).unwrap();
-	if check == 0 {
-		let _ = server.send_privmsg(&chan, "No sammiches in the database, add some.");
-	}
+			let result: String = conn.query_row("select sammich from sammiches order by random() limit 1", &[], |row| {
+				row.get(0)
+			}).unwrap();
 
-	let result: String = conn.query_row("select sammich from sammiches order by random() limit 1", &[], |row| {
-		row.get(0)
-	}).unwrap();
-
-	let dome: String = format!("whips up a {} sammich for {}", result, nick);
-	let _ = server.send_action(&chan, &dome);
+			let dome: String = format!("whips up a {} sammich for {}", result, nick);
+			let _ = server.send_action(&chan, &dome);
+		},
+	};
 }
 
 fn command_sammich_alt(server: &IrcServer, chan: &String, target: &String) {
@@ -967,14 +1105,28 @@ fn nullme(data: &[u8]) -> Result<usize,curl::easy::WriteError> {
 	Ok(data.len())
 }
 
-fn command_google(server: &IrcServer, botconfig: &BotConfig, chan: &String, searchstr: String) {
+fn command_google(server: &IrcServer, chan: &String, searchstr: String) {
+	let go_key;
+	let cse_id;
+	let bkey;
+	let bcx;
+	match BOTCONFIG.lock() {
+		Err(err) => {
+			println!("Could not lock BOTCONFIG: {:?}", err);
+			return;
+		},
+		Ok(botconfig) => {
+			go_key = botconfig.go_key.clone();
+			bkey = go_key.into_bytes();
+			cse_id = botconfig.cse_id.clone();
+			bcx = cse_id.into_bytes();
+		},
+	};
 	let mut dst = Vec::new();
 	let mut easy = Easy::new();
 	let bsearchstr = &searchstr.clone().into_bytes();
 	let esearchstr = easy.url_encode(&bsearchstr[..]);
-	let bcx = &botconfig.cse_id.clone().into_bytes();
 	let ecx = easy.url_encode(&bcx[..]);
-	let bkey = &botconfig.go_key.clone().into_bytes();
 	let ekey = easy.url_encode(&bkey[..]);
 	let url = format!("https://www.googleapis.com/customsearch/v1?q={}&cx={}&safe=off&key={}", esearchstr, ecx, ekey);
 
@@ -1010,8 +1162,8 @@ fn command_google(server: &IrcServer, botconfig: &BotConfig, chan: &String, sear
 	let _ = server.send_privmsg(&chan, &response);
 }
 
-fn command_klingon(server: &IrcServer, botconfig: &BotConfig, chan: &String, english: String) {
-	let token = get_bing_token(&botconfig);
+fn command_klingon(server: &IrcServer, chan: &String, english: String) {
+	let token = get_bing_token();
 	if token == "".to_string() {
 		let _ = server.send_privmsg(&chan, "Could not get bing translate token, check the logs");
 		return;
@@ -1058,7 +1210,7 @@ fn command_klingon(server: &IrcServer, botconfig: &BotConfig, chan: &String, eng
 	return;
 }
 
-fn command_tell(server: &IrcServer, conn: &Connection, chan: &String, nick: &String, incoming: String) {
+fn command_tell(server: &IrcServer, chan: &String, nick: &String, incoming: String) {
 	let space = incoming.find(" ").unwrap_or(0);
 	if space == 0 { return; }
 	let tellwho = incoming[..space].trim().to_string();
@@ -1066,7 +1218,7 @@ fn command_tell(server: &IrcServer, conn: &Connection, chan: &String, nick: &Str
 	if tellwho.len() < 1 || tellwhat.len() < 1 {
 		return;
 	}
-	if save_msg(&conn, &nick, tellwho, tellwhat) {
+	if save_msg(&nick, tellwho, tellwhat) {
 		let _ = server.send_privmsg(&chan, "Okay, I'll tell them next time I see them.");
 	}
 	else {
@@ -1075,7 +1227,7 @@ fn command_tell(server: &IrcServer, conn: &Connection, chan: &String, nick: &Str
 	return;
 }
 
-fn command_roll(server: &IrcServer, botconfig: &BotConfig, chan: &String, args: String) {
+fn command_roll(server: &IrcServer, chan: &String, args: String) {
 	let maxdice = 9000;
 	let maxsides = 9000;
 	let maxthrows = 13;
@@ -1086,7 +1238,7 @@ fn command_roll(server: &IrcServer, botconfig: &BotConfig, chan: &String, args: 
 	let capturetwo = regtwo.captures(args.as_str());
 	let mut throws = "1";
 	if captureone.is_none() {
-		command_help(&server, &botconfig, &chan, Some("roll".to_string()));
+		command_help(&server, &chan, Some("roll".to_string()));
 		return;
 	}
 	if capturetwo.is_some() {
@@ -1122,29 +1274,51 @@ fn command_roll(server: &IrcServer, botconfig: &BotConfig, chan: &String, args: 
 	return;
 }
 
-fn command_youtube(server: &IrcServer, botconfig: &BotConfig, chan: &String, query: String) {
-	let link = get_youtube(&botconfig.go_key, &query);
-	let _ = server.send_privmsg(&chan, format!("https://www.youtube.com/watch?v={}", link).as_str());
+fn command_youtube(server: &IrcServer, chan: &String, query: String) {
+	match BOTCONFIG.lock() {
+		Err(err) => println!("Could not lock BOTCONFIG: {:?}", err),
+		Ok(botconfig) => {
+			let link = get_youtube(&botconfig.go_key, &query);
+			let _ = server.send_privmsg(&chan, format!("https://www.youtube.com/watch?v={}", link).as_str());
+		},
+	};
 	return;
 }
 
-fn command_submit(mut botconfig: &mut BotConfig, mut titleres: &mut Vec<Regex>,mut descres: &mut Vec<Regex>, server: &IrcServer, chan: &String, subtx: &Sender<Submission>, suburl: String, summary: String, submitter: &String) {
+fn command_submit(server: &IrcServer, chan: &String, subtx: &Sender<Submission>, suburl: String, summary: String, submitter: &String) {
 	let page: String = sub_get_page(&suburl);
-	let title: String = sub_get_title(&mut titleres, &page);
+	let title: String = sub_get_title(&page);
 	if title == "".to_string() {
 		let _ = server.send_privmsg(&chan, "Unable to find a title for that page");
 		return;
 	}
 
-	let description: String = sub_get_description(&mut descres, &page);
+	let description: String = sub_get_description(&page);
 	if description == "".to_string() {
 		let _ = server.send_privmsg(&chan, "Unable to find a summary for that page");
 		return;
 	}
 	
-	let mut cookie = botconfig.cookie.clone();
+	let mut cookie;
+	let botnick;
+	{
+		match BOTSTATE.lock() {
+			Err(err) => {
+				println!("Could not lock BOTSTATE: {:?}", err);
+				return;
+			},
+			Ok(botstate) => cookie = botstate.cookie.clone(),
+		};
+		match BOTCONFIG.lock() {
+			Err(err) => {
+				println!("Could not lock BOTCONFIG: {:?}", err);
+				return;
+			},
+			Ok(botconfig) => botnick = botconfig.nick.clone(),
+		};
+	}
 	if cookie == "".to_string() {
-		cookie = sub_get_cookie(&mut botconfig);
+		cookie = sub_get_cookie();
 	}
 	
 	let reskey = sub_get_reskey(&cookie);
@@ -1153,15 +1327,15 @@ fn command_submit(mut botconfig: &mut BotConfig, mut titleres: &mut Vec<Regex>,m
 		return;
 	}
 	
-	let story = sub_build_story( &submitter, &description, &summary, &suburl );
+	let story = sub_build_story(&submitter, &description, &summary, &suburl );
 	
 	let submission = Submission {
-		reskey: reskey.clone(),
-		subject: title.clone(),
-		story: story.clone(),
+		reskey: reskey,
+		subject: title,
+		story: story,
 		chan: chan.clone(),
-		cookie: cookie.clone(),
-		botnick: botconfig.nick.clone(),
+		cookie: cookie,
+		botnick: botnick,
 	};
 
 	let _ = server.send_privmsg(&chan, "Submitting. There is a mandatory delay, please be patient.");
@@ -1171,6 +1345,7 @@ fn command_submit(mut botconfig: &mut BotConfig, mut titleres: &mut Vec<Regex>,m
 		Ok(_) => {},
 		Err(err) => println!("{:?}", err),
 	};
+	return;
 }
 
 fn command_quit(server: &IrcServer, chan: String) {
@@ -1192,23 +1367,19 @@ fn command_join(server: &IrcServer, joinchan: String) {
 	let _ = server.send_join(&joinchan);
 }
 
-fn command_part(server: &IrcServer, vchannels: &Vec<MyChannel>, chan: &String, partchan: String) {
-	let botconfig = server.config();
-	let channels = botconfig.clone().channels.unwrap();
-	let homechannel = channels[0].clone();
-	if homechannel.to_string() == partchan {
-		let msg = format!("No.");
-		let _ = server.send_privmsg(&chan, &msg);
-		return;
-	}
-	
-	for channel in vchannels.iter() {
-		if (channel.name == partchan) && (channel.protected) {
-			let msg = format!("No.");
-			let _ = server.send_privmsg(&chan, &msg);
+fn command_part(server: &IrcServer, chan: &String, partchan: String) {
+	match BOTCONFIG.lock() {
+		Err(err) => {
+			println!("Could not lock BOTCONFIG: {:?}", err);
 			return;
-		}
-	}
+		},
+		Ok(botconfig) => {
+			if botconfig.protected.contains(&partchan) {
+				let _ = server.send_privmsg(&chan, "No.");
+				return;
+			}
+		},
+	};
 	
 	// else
 	let partmsg: Message = Message {
@@ -1225,7 +1396,7 @@ fn command_say(server: &IrcServer, chan: String, message: String) {
 	return;
 }
 
-fn command_seen(server: &IrcServer, conn: &Connection, chan: &String, who: String) {
+fn command_seen(server: &IrcServer, chan: &String, who: String) {
 	struct SeenResult {
 		channel: String,
 		said: String,
@@ -1234,244 +1405,319 @@ fn command_seen(server: &IrcServer, conn: &Connection, chan: &String, who: Strin
 		action: bool
 	};
 	let result: SeenResult;
-	if !sql_table_check(&conn, "seen".to_string()) {
+	if !sql_table_check("seen".to_string()) {
 		println!("`seen` table not found, creating...");
-		if !sql_table_create(&conn, "seen".to_string()) {
+		if !sql_table_create("seen".to_string()) {
 			let _ = server.send_privmsg(&chan, "No seen table exists and for some reason I cannot create one");
 			return;
 		}
 	}
 
-	let count: i32 = conn.query_row("SELECT count(nick) FROM seen WHERE nick = ?", &[&who], |row| {
-		row.get(0)
-	}).unwrap();
-	if count == 0 {
-		let privmsg = format!("Sorry, I have not seen {}", who);
-		let _ = server.send_privmsg(&chan, &privmsg);
-		return;
-	}
-
-	result = conn.query_row("SELECT channel, said, datetime(ts, 'unixepoch'), nick, action FROM seen WHERE nick = ? COLLATE NOCASE ORDER BY ts DESC LIMIT 1", &[&who], |row| {
-		SeenResult {
-			channel: row.get(0),
-			said: row.get(1),
-			datetime: row.get(2),
-			nick: row.get(3),
-			action: match row.get(4) {
-				1 => true,
-				_ => false
-			}
-		}
-	}).unwrap();
-	
-	if result.action {
-		let privmsg = format!("[{}] {} *{} {}", result.datetime, result.channel, result.nick, result.said);
-		let _ = server.send_privmsg(&chan, &privmsg);
-	}
-	else {
-		let privmsg = format!("[{}] {} <{}> {}", result.datetime, result.channel, result.nick, result.said);
-		let _ = server.send_privmsg(&chan, &privmsg);
-	}
-	return;
-}
-
-fn command_smake(server: &IrcServer, conn: &Connection, chan: &String, who: String) {
-	if !sql_table_check(&conn, "smakes".to_string()) {
-		println!("`smakes` table not found, creating...");
-		if !sql_table_create(&conn, "smakes".to_string()) {
-			let _ = server.send_privmsg(&chan, "No smakes table exists and for some reason I cannot create one");
-			return;
-		}
-	}
-
-	let check: i32 = conn.query_row("select count(*) from smakes", &[], |row| {
-		row.get(0)
-	}).unwrap();
-	if check == 0 {
-		let _ = server.send_privmsg(&chan, "No smakes in the database, add some.");
-	}
-
-	let result: String = conn.query_row("select smake from smakes order by random() limit 1", &[], |row| {
-		row.get(0)
-	}).unwrap();
-
-	let dome: String = format!("smakes {} upside the head with {}", who, result);
-	let _ = server.send_action(&chan, &dome);
-}
-
-fn command_smakeadd(server: &IrcServer, conn: &Connection, chan: &String, what: String) {
-	if !sql_table_check(&conn, "smakes".to_string()) {
-		println!("`smakes` table not found, creating...");
-		if !sql_table_create(&conn, "smakes".to_string()) {
-			let _ = server.send_privmsg(&chan, "No smakes table exists and for some reason I cannot create one");
-			return;
-		}
-	}
-	
-	match conn.execute("INSERT INTO smakes VALUES(NULL, $1)", &[&what]) {
+	match CONN.lock() {
 		Err(err) => {
-			println!("{}", err);
-			let _ = server.send_privmsg(&chan, "Error writing to smakes table.");
+			println!("Could not lock CONN: {:?}", err);
 			return;
 		},
-		Ok(_) => {
-			let sayme: String = format!("\"{}\" added.", what);
-			let _ = server.send_privmsg(&chan, &sayme);
+		Ok(conn) => {
+			let count: i32 = conn.query_row("SELECT count(nick) FROM seen WHERE nick = ?", &[&who], |row| {
+				row.get(0)
+			}).unwrap();
+			if count == 0 {
+				let privmsg = format!("Sorry, I have not seen {}", who);
+				let _ = server.send_privmsg(&chan, &privmsg);
+				return;
+			}
+
+			result = conn.query_row("SELECT channel, said, datetime(ts, 'unixepoch'), nick, action FROM seen WHERE nick = ? COLLATE NOCASE ORDER BY ts DESC LIMIT 1", &[&who], |row| {
+				SeenResult {
+					channel: row.get(0),
+					said: row.get(1),
+					datetime: row.get(2),
+					nick: row.get(3),
+					action: match row.get(4) {
+						1 => true,
+						_ => false
+					}
+				}
+			}).unwrap();
+	
+			if result.action {
+				let privmsg = format!("[{}] {} *{} {}", result.datetime, result.channel, result.nick, result.said);
+				let _ = server.send_privmsg(&chan, &privmsg);
+			}
+			else {
+				let privmsg = format!("[{}] {} <{}> {}", result.datetime, result.channel, result.nick, result.said);
+				let _ = server.send_privmsg(&chan, &privmsg);
+			}
 			return;
 		},
 	};
 }
 
-fn command_fake_weather_add(server: &IrcServer, conn: &Connection, chan: &String, what: String, mut wucache: &mut Vec<CacheEntry>) {
-	let mut colon = what.find(':').unwrap_or(what.len());
-	if colon == what.len() {
-		return;
+fn command_smake(server: &IrcServer, chan: &String, who: String) {
+	if !sql_table_check("smakes".to_string()) {
+		println!("`smakes` table not found, creating...");
+		if !sql_table_create("smakes".to_string()) {
+			let _ = server.send_privmsg(&chan, "No smakes table exists and for some reason I cannot create one");
+			return;
+		}
 	}
-	let location: String = what[..colon].to_string();
-	colon += 1;
-	let weather: String = what[colon..].to_string().trim().to_string();
-	match conn.execute("INSERT INTO fake_weather VALUES ($1, $2)", &[&location, &weather]) {
+
+	match CONN.lock() {
 		Err(err) => {
-                        println!("{}", err);
-                        let _ = server.send_privmsg(&chan, "Error writing to fake_weather table.");
-                        return;
+			println!("Could not lock CONN: {:?}", err);
+			return;
+		},
+		Ok(conn) => {
+			let check: i32 = conn.query_row("select count(*) from smakes", &[], |row| {
+				row.get(0)
+			}).unwrap();
+			if check == 0 {
+				let _ = server.send_privmsg(&chan, "No smakes in the database, add some.");
+			}
+
+			let result: String = conn.query_row("select smake from smakes order by random() limit 1", &[], |row| {
+				row.get(0)
+			}).unwrap();
+
+			let dome: String = format!("smakes {} upside the head with {}", who, result);
+			let _ = server.send_action(&chan, &dome);
+		},
+	};
+}
+
+fn command_smakeadd(server: &IrcServer, chan: &String, what: String) {
+	if !sql_table_check("smakes".to_string()) {
+		println!("`smakes` table not found, creating...");
+		if !sql_table_create("smakes".to_string()) {
+			let _ = server.send_privmsg(&chan, "No smakes table exists and for some reason I cannot create one");
+			return;
+		}
+	}
+	
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return;
+		},
+		Ok(conn) => {
+			match conn.execute("INSERT INTO smakes VALUES(NULL, $1)", &[&what]) {
+				Err(err) => {
+					println!("{}", err);
+					let _ = server.send_privmsg(&chan, "Error writing to smakes table.");
+					return;
+				},
+				Ok(_) => {
+					let sayme: String = format!("\"{}\" added.", what);
+					let _ = server.send_privmsg(&chan, &sayme);
+					return;
+				},
+			};
+		},
+	};
+}
+
+fn command_fake_weather_add(server: &IrcServer, chan: &String, what: String) {
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return;
+		},
+		Ok(conn) => {
+			let mut colon = what.find(':').unwrap_or(what.len());
+			if colon == what.len() {
+				return;
+			}
+			let location: String = what[..colon].to_string();
+			colon += 1;
+			let weather: String = what[colon..].to_string().trim().to_string();
+			match conn.execute("INSERT INTO fake_weather VALUES ($1, $2)", &[&location, &weather]) {
+				Err(err) => {
+					println!("{}", err);
+					let _ = server.send_privmsg(&chan, "Error writing to fake_weather table.");
+					return;
                 },
                 Ok(_) => {
-			let entry: CacheEntry = CacheEntry {
-        	                age: std::i64::MAX,
-	                        location: location.clone(),
-                        	weather: weather.clone(),
+					let entry: CacheEntry = CacheEntry {
+						age: std::i64::MAX,
+						location: location.clone(),
+						weather: weather.clone(),
                 	};
-			wucache.push(entry);
-                        let sayme: String = format!("\"{}\" added.", location);
-                        let _ = server.send_privmsg(&chan, &sayme);
-                        return;
+					match WUCACHE.lock() {
+						Err(err) => {
+							println!("Could not lock WUCACHE: {:?}", err);
+							return;
+						},
+						Ok(mut wucache) => {
+							wucache.push(entry);
+						},
+					};
+					let sayme: String = format!("\"{}\" added.", location);
+					let _ = server.send_privmsg(&chan, &sayme);
+					return;
                 },
+			};
+		},
 	};
 }
 
-fn command_weather_alias(botconfig: &BotConfig, server: &IrcServer, conn: &Connection, chan: &String, walias: String) {
-	if !sql_table_check(&conn, "weather_aliases".to_string()) {
-                println!("weather_aliases table not found, creating...");
-                if !sql_table_create(&conn, "weather_aliases".to_string()) {
-                        let _ = server.send_privmsg(&chan, "No weather_aliases table exists and for some reason I cannot create one");
-                        return;
-                }
+fn command_weather_alias(server: &IrcServer, chan: &String, walias: String) {
+	if !sql_table_check("weather_aliases".to_string()) {
+        println!("weather_aliases table not found, creating...");
+        if !sql_table_create("weather_aliases".to_string()) {
+            let _ = server.send_privmsg(&chan, "No weather_aliases table exists and for some reason I cannot create one");
+            return;
         }
+	}
 	
 	let mut colon = walias.find(':').unwrap_or(walias.len());
 	if colon == walias.len() {
-		command_help(&server, &botconfig, &chan, Some("weatheralias".to_string()));
+		command_help(&server, &chan, Some("weatheralias".to_string()));
 		return;
 	}
 	let flocation = walias[..colon].trim().to_string();
 	colon += 1;
 	let rlocation = walias[colon..].trim().to_string();
 	if flocation.len() < 3 || rlocation.len() < 3 {
-		command_help(&server, &botconfig, &chan, Some("weatheralias".to_string()));
+		command_help(&server, &chan, Some("weatheralias".to_string()));
 		return;
 	}
-	// make sure an alias doesn't stomp on a saved person/place name
-	let is_user: i32 = conn.query_row("SELECT count(nick) FROM locations WHERE nick = $1", &[&flocation], |row| {
-		row.get(0)
-	}).unwrap();
-	if is_user != 0 {
-		let sayme = format!("{} is someone's nick, jackass.", &flocation);
-		let _ = server.send_privmsg(&chan, &sayme);
-		return;
-	}
-	match conn.execute("REPLACE INTO weather_aliases VALUES ($1, $2 )", &[&flocation, &rlocation]) {
+	match CONN.lock() {
 		Err(err) => {
-                        println!("{}", err);
-                        let _ = server.send_privmsg(&chan, "Error writing to weather_aliases table.");
-                        return;
+			println!("Could not lock CONN: {:?}", err);
+			return;
+		},
+		Ok(conn) => {
+			// make sure an alias doesn't stomp on a saved person/place name
+			let is_user: i32 = conn.query_row("SELECT count(nick) FROM locations WHERE nick = $1", &[&flocation], |row| {
+				row.get(0)
+			}).unwrap();
+			if is_user != 0 {
+				let sayme = format!("{} is someone's nick, jackass.", &flocation);
+				let _ = server.send_privmsg(&chan, &sayme);
+				return;
+			}
+			match conn.execute("REPLACE INTO weather_aliases VALUES ($1, $2 )", &[&flocation, &rlocation]) {
+				Err(err) => {
+					println!("{}", err);
+					let _ = server.send_privmsg(&chan, "Error writing to weather_aliases table.");
+                    return;
                 },
                 Ok(_) => {
-                        let sayme: String = format!("\"{}\" added.", flocation);
-                        let _ = server.send_privmsg(&chan, &sayme);
-                        return;
+                    let sayme: String = format!("\"{}\" added.", flocation);
+                    let _ = server.send_privmsg(&chan, &sayme);
+                    return;
                 },
+			};
+		},
 	};
 }
 
-fn command_weatheradd(server: &IrcServer, conn: &Connection, nick: &String, chan: &String, checklocation: String) {
-	
-	if !sql_table_check(&conn, "locations".to_string()) {
+fn command_weatheradd(server: &IrcServer, nick: &String, chan: &String, checklocation: String) {
+	if !sql_table_check("locations".to_string()) {
 		println!("locations table not found, creating...");
-		if !sql_table_create(&conn, "locations".to_string()) {
+		if !sql_table_create("locations".to_string()) {
 			let _ = server.send_privmsg(&chan, "No locations table exists and for some reason I cannot create one");
 			return;
 		}
 	}
 
-	match conn.execute("REPLACE INTO locations VALUES($1, $2)", &[nick, &checklocation]) {
+	match CONN.lock() {
 		Err(err) => {
-			println!("{}", err);
-			let _ = server.send_privmsg(&chan, "Error saving your location.");
+			println!("Could not lock CONN: {:?}", err);
+			return;
 		},
-		Ok(_) => {
-			let sayme: String = format!("Location for {} set to {}", nick, checklocation);
-			let _ = server.send_privmsg(&chan, &sayme);
+		Ok(conn) => {
+			match conn.execute("REPLACE INTO locations VALUES($1, $2)", &[nick, &checklocation]) {
+				Err(err) => {
+					println!("{}", err);
+					let _ = server.send_privmsg(&chan, "Error saving your location.");
+				},
+				Ok(_) => {
+					let sayme: String = format!("Location for {} set to {}", nick, checklocation);
+					let _ = server.send_privmsg(&chan, &sayme);
+				},
+			};
+			return;
 		},
 	};
-	return;
 }
 
-fn command_weather(botconfig: &BotConfig, server: &IrcServer, conn: &Connection, mut wucache: &mut Vec<CacheEntry>, nick: &String, chan: &String, checklocation: Option<String>) {
-		let weather: String;
-		let mut unaliasedlocation = checklocation;
-		let location: Option<String>;
+fn command_weather(server: &IrcServer, nick: &String, chan: &String, checklocation: Option<String>) {
+	let weather: String;
+	let mut unaliasedlocation = checklocation;
+	let location: Option<String>;
 
-		// unalias unaliasedlocation if it is aliased
-		if unaliasedlocation.is_some() {
-			let is_alias: i32 = conn.query_row("SELECT count(fake_location) FROM weather_aliases WHERE fake_location = $1", &[&unaliasedlocation.clone().unwrap()], |row| {
-				row.get(0)
-			}).unwrap();
-			if is_alias == 1 {
-				unaliasedlocation = Some(conn.query_row("SELECT real_location FROM weather_aliases WHERE fake_location = $1", &[&unaliasedlocation.clone().unwrap()], |row| {
-					row.get(0)
-				}).unwrap());
-			}
-		}
-
-		if unaliasedlocation.is_some() {
-			let count: i32 = conn.query_row("SELECT count(nick) FROM locations WHERE nick = $1", &[&unaliasedlocation.clone().unwrap()], |row| {
-					row.get(0)
-			}).unwrap();
-			if count == 1 {
-				location = Some(conn.query_row("SELECT location FROM locations WHERE nick = $1", &[&unaliasedlocation.clone().unwrap()], |row| {
-					row.get(0)
-				}).unwrap());
-			}
-			else {
-				location = unaliasedlocation;
-			}
-		}
-		else {		
-			let count: i32 = conn.query_row("SELECT count(location) FROM locations WHERE nick = $1", &[nick], |row| {
-					row.get(0)
-			}).unwrap();
-			if count == 0 {
-				location = None;
-			}
-			else {
-				location = Some(conn.query_row("SELECT location FROM locations WHERE nick = $1", &[nick], |row| {
-					row.get(0)
-				}).unwrap());
-			}
-		}
-		
-		match location {
-			Some(var) =>	weather = get_weather(&mut wucache, &botconfig.wu_key, var.trim().to_string()),
-			None => weather = format!("No location found for {}", nick).to_string(),
-		};
-
-		let _ = server.send_privmsg(&chan, &weather.trim().to_string());
+	// unalias unaliasedlocation if it is aliased
+	match CONN.lock() {
+	Err(err) => {
+		println!("Could not lock CONN: {:?}", err);
 		return;
+	},
+	Ok(conn) => {
+			if unaliasedlocation.is_some() {
+				let is_alias: i32 = conn.query_row("SELECT count(fake_location) FROM weather_aliases WHERE fake_location = $1", &[&unaliasedlocation.clone().unwrap()], |row| {
+					row.get(0)
+				}).unwrap();
+				if is_alias == 1 {
+					unaliasedlocation = Some(conn.query_row("SELECT real_location FROM weather_aliases WHERE fake_location = $1", &[&unaliasedlocation.clone().unwrap()], |row| {
+						row.get(0)
+					}).unwrap());
+				}
+			}
+
+			if unaliasedlocation.is_some() {
+				let count: i32 = conn.query_row("SELECT count(nick) FROM locations WHERE nick = $1", &[&unaliasedlocation.clone().unwrap()], |row| {
+						row.get(0)
+				}).unwrap();
+				if count == 1 {
+					location = Some(conn.query_row("SELECT location FROM locations WHERE nick = $1", &[&unaliasedlocation.clone().unwrap()], |row| {
+						row.get(0)
+					}).unwrap());
+				}
+				else {
+					location = unaliasedlocation;
+				}
+			}
+			else {		
+				let count: i32 = conn.query_row("SELECT count(location) FROM locations WHERE nick = $1", &[nick], |row| {
+						row.get(0)
+				}).unwrap();
+				if count == 0 {
+					location = None;
+				}
+				else {
+					location = Some(conn.query_row("SELECT location FROM locations WHERE nick = $1", &[nick], |row| {
+						row.get(0)
+					}).unwrap());
+				}
+			}
+		
+			match location {
+				Some(var) => {
+					let wukey;
+					match BOTCONFIG.lock() {
+						Err(err) => {
+							println!("Could not lock BOTCONFIG: {:?}", err);
+							return;
+						},
+						Ok(botconfig) => {
+							wukey = botconfig.wu_key.clone();
+						},
+					};
+					weather = get_weather(&wukey, var.trim().to_string());
+				},
+				None => weather = format!("No location found for {}", nick).to_string(),
+			};
+
+			let _ = server.send_privmsg(&chan, &weather.trim().to_string());
+			return;
+		},
+	};
 }
 
-fn command_abuser(server: &IrcServer, conn: &Connection, chan: &String, abuser: String) {
-	if hostmask_add(&server, &conn, &chan, "abusers", &abuser) {
+fn command_abuser(server: &IrcServer, chan: &String, abuser: String) {
+	if hostmask_add(&server, &chan, "abusers", &abuser) {
 		let result: String = format!("Added '{}' to abusers.", &abuser);
 		let _ = server.send_privmsg(&chan, &result);
 	}
@@ -1482,8 +1728,9 @@ fn command_abuser(server: &IrcServer, conn: &Connection, chan: &String, abuser: 
 	return;
 }
 
-fn command_admin(server: &IrcServer, conn: &Connection, chan: &String, admin: String) {
-	if hostmask_add(&server, &conn, &chan, "admins", &admin) {
+/*
+fn command_admin(server: &IrcServer, chan: &String, admin: String) {
+	if hostmask_add(&server, &chan, "admins", &admin) {
 		let result: String = format!("Added '{}' to admins.", &admin);
 		let _ = server.send_privmsg(&chan, &result);
 	}
@@ -1493,9 +1740,10 @@ fn command_admin(server: &IrcServer, conn: &Connection, chan: &String, admin: St
 	}
 	return;
 }
+*/
 
-fn command_bot(server: &IrcServer, conn: &Connection, chan: &String, bot: String) {
-	if hostmask_add(&server, &conn, &chan, "bots", &bot) {
+fn command_bot(server: &IrcServer, chan: &String, bot: String) {
+	if hostmask_add(&server, &chan, "bots", &bot) {
 		let result: String = format!("Added '{}' to bots.", &bot);
 		let _ = server.send_privmsg(&chan, &result);
 	}
@@ -1506,128 +1754,177 @@ fn command_bot(server: &IrcServer, conn: &Connection, chan: &String, bot: String
 	return;
 }
 
-fn command_help(server: &IrcServer, botconfig: &BotConfig, chan: &String, command: Option<String>) {
-	let helptext: String = get_help(&botconfig.prefix, command);
-	let _ = server.send_privmsg(&chan, &helptext);
-}
-
-fn sql_table_check(conn: &Connection, table: String) -> bool {
-	let result: i32 = conn.query_row("SELECT count(name) FROM sqlite_master WHERE type = 'table' and name = ? LIMIT 1", &[&table], |row| {
-			row.get(0)
-	}).unwrap();
-	
-	if result == 1 {
-		return true;
-	}
-	false
-}
-
-fn sql_table_create(conn: &Connection, table: String) -> bool {
-	let schema: String = sql_get_schema(&table);
-	match conn.execute(&schema, &[]) {
-			Err(err) => { println!("{}", err); return false; },
-			Ok(_) => { println!("{} table created", table); return true; },
+fn command_help(server: &IrcServer, chan: &String, command: Option<String>) {
+	match BOTCONFIG.lock() {
+		Err(err) => {
+			println!("Could not lock BOTCONFIG: {:?}", err);
+		},
+		Ok(botconfig) => {
+			let helptext: String = get_help(&botconfig.prefix, command);
+			let _ = server.send_privmsg(&chan, &helptext);
+		},
 	};
-}
-
-fn prime_weather_cache(conn: &Connection, mut wucache: &mut Vec<CacheEntry>) {
-	let table = "fake_weather".to_string();
-	if !sql_table_check(&conn, table.clone()) {
-                if !sql_table_create(&conn, table.clone()) {
-                        println!("Could not create table 'fake_weather'!");
-			return;
-                }
-		return;
-        }
-	
-	let mut statement = format!("SELECT count(*) FROM {}", &table);
-        let result: i32 = conn.query_row(statement.as_str(), &[], |row| {
-                        row.get(0)
-        }).unwrap();
-        if result == 0 {
-                return;
-        }
-
-	statement = format!("SELECT * from {}", &table);
-	let mut stmt = conn.prepare(statement.as_str()).unwrap();
-	let allrows = stmt.query_map(&[], |row| {
-		CacheEntry {
-                	age: std::i64::MAX,
-	                location: row.get(0),
-        	        weather: row.get(1),
-		}
-	}).unwrap();
-
-	for entry in allrows {
-		let thisentry = entry.unwrap();
-		wucache.push(thisentry);
-	}
-}
-
-fn check_messages(conn: &Connection, nick: &String) -> bool {
-	let table = "messages".to_string();
-	if !sql_table_check(&conn, table.clone()) {
-		return false;
-	}
-	let statement: String = format!("SELECT count(*) FROM {} WHERE recipient = $1", &table);
-	let result: i32 = conn.query_row(statement.as_str(), &[&nick.as_str()], |row| {
-			row.get(0)
-	}).unwrap();
-	if result > 0 {
-		return true;
-	}
-	false
-}
-
-fn deliver_messages(server: &IrcServer, conn: &Connection, nick: &String) {
-	struct Row {
-		sender: String,
-		message: String,
-		ts: i64
-	};
-	let mut timestamps: Vec<i64> = vec![];
-	let mut stmt = conn.prepare(format!("SELECT * FROM messages WHERE recipient = '{}' ORDER BY ts", &nick).as_str()).unwrap();
-	let allrows = stmt.query_map(&[], |row| {
-		Row {
-			sender: row.get(0),
-			message: row.get(2),
-			ts: row.get(3)
-		}
-	}).unwrap();
-
-	for row in allrows {
-		let thisrow = row.unwrap();
-		let _ = server.send_privmsg(&nick, format!("<{}> {}", thisrow.sender, thisrow.message).as_str());
-		timestamps.push(thisrow.ts);
-	}
-	
-	for ts in timestamps.iter() {
-		let statement = format!("DELETE FROM messages WHERE recipient = '{}' AND ts = {}", &nick, &ts);
-		match conn.execute(statement.as_str(), &[]) {
-			Err(err) => println!("{}", err),
-			Ok(_) => {}
-		};
-	}
 	return;
 }
 
-fn save_msg(conn: &Connection, fromwho: &String, tellwho: String, tellwhat: String) -> bool {
+fn sql_table_check(table: String) -> bool {
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return false;
+		},
+		Ok(conn) => {
+			let result: i32 = conn.query_row("SELECT count(name) FROM sqlite_master WHERE type = 'table' and name = ? LIMIT 1", &[&table], |row| {
+				row.get(0)
+			}).unwrap();
+	
+			if result == 1 {
+				return true;
+			}
+			return false;
+		},
+	};
+}
+
+fn sql_table_create(table: String) -> bool {
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return false;
+		},
+		Ok(conn) => {
+			let schema: String = sql_get_schema(&table);
+			match conn.execute(&schema, &[]) {
+				Err(err) => { println!("{}", err); return false; },
+				Ok(_) => { println!("{} table created", table); return true; },
+			};
+		},
+	};
+}
+
+fn prime_weather_cache() {
+	let table = "fake_weather".to_string();
+	if !sql_table_check(table.clone()) {
+		if !sql_table_create(table.clone()) {
+			println!("Could not create table 'fake_weather'!");
+			return;
+		}
+		return;
+	}
+	match CONN.lock() {
+		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Ok(conn) => {
+			let mut statement = format!("SELECT count(*) FROM {}", &table);
+			let result: i32 = conn.query_row(statement.as_str(), &[], |row| {
+                        row.get(0)
+			}).unwrap();
+	        if result == 0 {
+				return;
+			}
+
+			statement = format!("SELECT * from {}", &table);
+			let mut stmt = conn.prepare(statement.as_str()).unwrap();
+			let allrows = stmt.query_map(&[], |row| {
+				CacheEntry {
+					age: std::i64::MAX,
+	                location: row.get(0),
+        	        weather: row.get(1),
+				}
+			}).unwrap();
+
+			for entry in allrows {
+				let thisentry = entry.unwrap();
+				match WUCACHE.lock() {
+					Err(err) => {
+						println!("Could not lock WUCACHE: {:?}", err);
+						return;
+					},
+					Ok(mut wucache) => wucache.push(thisentry),
+				};
+			}
+		},
+	};
+}
+
+fn check_messages(nick: &String) -> bool {
 	let table = "messages".to_string();
-	if !sql_table_check(&conn, table.clone()) {
-		if !sql_table_create(&conn, table.clone()) {
+	if !sql_table_check(table.clone()) {
+		return false;
+	}
+	match CONN.lock() {
+		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Ok(conn) => {
+			let statement: String = format!("SELECT count(*) FROM {} WHERE recipient = $1", &table);
+			let result: i32 = conn.query_row(statement.as_str(), &[&nick.as_str()], |row| {
+				row.get(0)
+			}).unwrap();
+			if result > 0 {
+				return true;
+			}
+		},
+	};
+	return false;
+}
+
+fn deliver_messages(server: &IrcServer, nick: &String) {
+	match CONN.lock() {
+		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Ok(conn) => {
+			struct Row {
+				sender: String,
+				message: String,
+				ts: i64
+			};
+			let mut timestamps: Vec<i64> = vec![];
+			let mut stmt = conn.prepare(format!("SELECT * FROM messages WHERE recipient = '{}' ORDER BY ts", &nick).as_str()).unwrap();
+			let allrows = stmt.query_map(&[], |row| {
+				Row {
+					sender: row.get(0),
+					message: row.get(2),
+					ts: row.get(3)
+				}
+			}).unwrap();
+
+			for row in allrows {
+				let thisrow = row.unwrap();
+				let _ = server.send_privmsg(&nick, format!("<{}> {}", thisrow.sender, thisrow.message).as_str());
+				timestamps.push(thisrow.ts);
+			}
+	
+			for ts in timestamps.iter() {
+				let statement = format!("DELETE FROM messages WHERE recipient = '{}' AND ts = {}", &nick, &ts);
+				match conn.execute(statement.as_str(), &[]) {
+					Err(err) => println!("{}", err),
+					Ok(_) => {}
+				};
+			}
+		},
+	};
+	return;
+}
+
+fn save_msg(fromwho: &String, tellwho: String, tellwhat: String) -> bool {
+	let table = "messages".to_string();
+	if !sql_table_check(table.clone()) {
+		if !sql_table_create(table.clone()) {
 			return false;
 		}
 	}
-	
-	let time: i64 = time::now_utc().to_timespec().sec;
-	let statement: String = format!("INSERT INTO {} VALUES($1, $2, $3, $4)", &table).to_string();
-	match conn.execute(statement.as_str(), &[&fromwho.as_str(), &tellwho, &tellwhat, &time]) {
-		Err(err) => {
-			println!("{}", err);
-			return false;
+	match CONN.lock() {
+		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Ok(conn) => {
+			let time: i64 = time::now_utc().to_timespec().sec;
+			let statement: String = format!("INSERT INTO {} VALUES($1, $2, $3, $4)", &table).to_string();
+			match conn.execute(statement.as_str(), &[&fromwho.as_str(), &tellwho, &tellwhat, &time]) {
+				Err(err) => {
+					println!("{}", err);
+					return false;
+				},
+				Ok(_) => return true,
+			};
 		},
-		Ok(_) => return true,
 	};
+	return false;
 }
 
 fn get_help(prefix: &String, command: Option<String>) -> String {
@@ -1677,8 +1974,6 @@ fn sql_get_schema(table: &String) -> String {
 		"seen" => "CREATE TABLE seen(nick TEXT, hostmask TEXT, channel TEXT, said TEXT, ts UNSIGNED INT(8), action UNSIGNED INT(1) CHECK(action IN(0,1)), primary key(nick, channel) )".to_string(),
 		"smakes" => "CREATE TABLE smakes (id INTEGER PRIMARY KEY AUTOINCREMENT, smake TEXT NOT NULL)".to_string(),
 		"sammiches" => "CREATE TABLE sammiches (id INTEGER PRIMARY KEY AUTOINCREMENT, sammich TEXT NOT NULL)".to_string(),
-		"bot_config" => "CREATE TABLE bot_config(nick TEXT PRIMARY KEY, server TEXT, channel TEXT, perl_file TEXT, prefix TEXT, admin_hostmask TEXT, snpass TEXT, snuser TEXT, cookiefile TEXT, wu_api_key TEXT, google_key text, bing_key TEXT, g_cse_id TEXT)".to_string(),
-		"channels" => "CREATE TABLE channels (name TEXT PRIMARY KEY, protected UNSIGNED INT(2) NOT NULL DEFAULT 0)".to_string(),
 		"locations" => "CREATE TABLE locations(nick TEXT PRIMARY KEY, location TEXT)".to_string(),
 		"bots" => "CREATE TABLE bots(hostmask TEXT PRIMARY KEY NOT NULL)".to_string(),
 		"abusers" => "CREATE TABLE abusers(hostmask TEXT PRIMARY KEY NOT NULL)".to_string(),
@@ -1694,42 +1989,66 @@ fn sql_get_schema(table: &String) -> String {
 	}
 }
 
-fn cache_push(mut cache: &mut Vec<CacheEntry>, location: &String, weather: &String) {
-	cache_prune(&mut cache);
-	let entry = CacheEntry {
-		age: time::now_utc().to_timespec().sec,
-		location: location.to_string().clone().to_lowercase(),
-		weather: weather.to_string().clone().to_lowercase(),
+fn cache_push(location: &String, weather: &String) {
+	cache_prune();
+	match WUCACHE.lock() {
+		Err(err) => {
+			println!("Could not lock WUCACHE: {:?}", err);
+			return;
+		},
+		Ok(mut cache) => {
+			let entry = CacheEntry {
+				age: time::now_utc().to_timespec().sec,
+				location: location.to_string().clone().to_lowercase(),
+				weather: weather.to_string().clone().to_lowercase(),
+			};
+			cache.push(entry);
+		},
 	};
-	cache.push(entry);
 	return;
 }
 
-fn cache_get(mut cache: &mut Vec<CacheEntry>, location: &String) -> Option<String> {
-	cache_prune(&mut cache);
-	let position: Option<usize> = cache.iter().position(|ref x| x.location == location.to_string().clone().to_lowercase());
-	if position.is_some() {
-		let weather: &String = &cache[position.unwrap()].weather;
-		return Some(weather.to_string().clone());
-	}
-	None
+fn cache_get(location: &String) -> Option<String> {
+	cache_prune();
+	match WUCACHE.lock() {
+		Err(err) => {
+			println!("Could not lock WUCACHE: {:?}", err);
+			return None;
+		},
+		Ok(cache) => {
+			let position: Option<usize> = cache.iter().position(|ref x| x.location == location.to_string().clone().to_lowercase());
+			if position.is_some() {
+				let weather: &String = &cache[position.unwrap()].weather;
+				return Some(weather.to_string().clone());
+			}
+			return None;
+		},
+	};
 }
 
-fn cache_prune(mut cache: &mut Vec<CacheEntry>) {
-	if cache.is_empty() { return; }
-	let oldest: i64 = time::now_utc().to_timespec().sec - 14400;
-	loop {
-		let position = cache.iter().position(|ref x| x.age < oldest);
-		match position {
-			Some(var) => cache.swap_remove(var),
-			None => break,
-		};
-	}
-	cache.shrink_to_fit();
+fn cache_prune() {
+	match WUCACHE.lock() {
+		Err(err) => {
+			println!("Could not lock WUCACHE: {:?}", err);
+			return;
+		},
+		Ok(mut cache) => {
+			if cache.is_empty() { return; }
+			let oldest: i64 = time::now_utc().to_timespec().sec - 14400;
+			loop {
+				let position = cache.iter().position(|ref x| x.age < oldest);
+				match position {
+					Some(var) => cache.swap_remove(var),
+					None => break,
+				};
+			}
+			cache.shrink_to_fit();
+		},
+	};
 }
 
-fn get_weather(mut wucache: &mut Vec<CacheEntry>, wu_key: &String, location: String) -> String {
-	let cached = cache_get(&mut wucache, &location);
+fn get_weather(wu_key: &String, location: String) -> String {
+	let cached = cache_get(&location);
 	if cached.is_some() {
 		return cached.unwrap();
 	}
@@ -1760,7 +2079,7 @@ fn get_weather(mut wucache: &mut Vec<CacheEntry>, wu_key: &String, location: Str
 	let today = forecast[0].find_path(&["fcttext"]).unwrap().as_string().unwrap();
 	let tomorrow = forecast[2].find_path(&["fcttext"]).unwrap().as_string().unwrap();
 	let forecast = format!("Today: {} Tomorrow: {}", today, tomorrow);
-	cache_push(&mut wucache, &location, &forecast);
+	cache_push(&location, &forecast);
 	return forecast;
 }
 
@@ -1790,98 +2109,102 @@ fn fix_location(location: &String) -> String {
 	}
 }
 
-fn hostmask_add(server: &IrcServer, conn: &Connection, chan: &String, table: &str, hostmask: &String) -> bool {
-	if !sql_table_check(&conn, table.to_string()) {
+fn hostmask_add(server: &IrcServer, chan: &String, table: &str, hostmask: &String) -> bool {
+	if !sql_table_check(table.to_string()) {
 		println!("{} table not found, creating...", table);
-		if !sql_table_create(&conn, table.to_string()) {
+		if !sql_table_create(table.to_string()) {
 			let err: String = format!("No {} table exists and for some reason I cannot create one. Check the logs.", table);
 			let _ = server.send_privmsg(&chan, &err);
 			return false;
 		}
 	}
 	
-	let statement: String = format!("INSERT INTO {} VALUES($1)", &table).to_string();
-	match conn.execute(statement.as_str(), &[&hostmask.as_str()]) {
+	match CONN.lock() {
 		Err(err) => {
-			println!("{}", err);
+			println!("Could not lock CONN: {:?}", err);
 			return false;
 		},
-		Ok(_) => return true,
+		Ok(conn) => {
+			let statement: String = format!("INSERT INTO {} VALUES($1)", &table).to_string();
+			match conn.execute(statement.as_str(), &[&hostmask.as_str()]) {
+				Err(err) => {
+					println!("{}", err);
+					return false;
+				},
+				Ok(_) => return true,
+			};
+		},
 	};
 }
 
-fn is_admin(botconfig: &BotConfig, server: &IrcServer, conn: &Connection, chan: &String, hostmask: &String) -> bool {
-	let table = "admins".to_string();
-	if !sql_table_check(&conn, table.clone()) {
-		println!("{} table not found, creating...", &table);
-		if !sql_table_create(&conn, table.clone()) {
-			let err: String = format!("No {} table exists and for some reason I cannot create one. Check the logs.", &table);
-			let _ = server.send_privmsg(&chan, &err);
-			return false;
+fn is_admin(nick: &String) -> bool {
+	match BOTCONFIG.lock() {
+		Err(err) => {
+			println!("Could not lock BOTCONFIG: {:?}", err);
+			false
+		},
+		Ok(botconfig) => {
+			botconfig.owners.contains(nick)
 		}
-		let statement: String = format!("INSERT INTO {} VALUES($1)", &table).to_string();
-		match conn.execute(statement.as_str(), &[&botconfig.admin.as_str()]) {
-			Err(err) => {
-				println!("{}", err);
-				return false;
-			},
-			Ok(_) => {},
-		};
 	}
-	
-	let statement: String = format!("SELECT count(*) FROM {} WHERE hostmask = $1", &table);
-	let hostmask: String = hostmask_only(&hostmask);
-	let result: i32 = conn.query_row(statement.as_str(), &[&hostmask], |row| {
-			row.get(0)
-	}).unwrap();
-	if result == 1 {
-		return true;
-	}
-	false
 }
 
-fn _is_bot(server: &IrcServer, conn: &Connection, chan: &String, hostmask: &String) -> bool {
+fn _is_bot(server: &IrcServer, chan: &String, hostmask: &String) -> bool {
 	let table = "bots".to_string();
-	if !sql_table_check(&conn, table.clone()) {
+	if !sql_table_check(table.clone()) {
 		println!("{} table not found, creating...", &table);
-		if !sql_table_create(&conn, table.clone()) {
+		if !sql_table_create(table.clone()) {
 			let err: String = format!("No {} table exists and for some reason I cannot create one. Check the logs.", &table);
 			let _ = server.send_privmsg(&chan, &err);
 			return false;
 		}
 	}
-	
-	let statement: String = format!("SELECT count(*) FROM {} WHERE hostmask = $1", &table);
-	let hostmask: String = hostmask_only(&hostmask);
-	let result: i32 = conn.query_row(statement.as_str(), &[&hostmask], |row| {
-			row.get(0)
-	}).unwrap();
-	if result == 1 {
-		return true;
-	}
-	false
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return false;
+		},
+		Ok(conn) => {
+			let statement: String = format!("SELECT count(*) FROM {} WHERE hostmask = $1", &table);
+			let hostmask: String = hostmask_only(&hostmask);
+			let result: i32 = conn.query_row(statement.as_str(), &[&hostmask], |row| {
+					row.get(0)
+			}).unwrap();
+			if result == 1 {
+				return true;
+			}
+			return false;
+		},
+	};
 }
 
-fn is_abuser(server: &IrcServer, conn: &Connection, chan: &String, hostmask: &String) -> bool {
+fn is_abuser(server: &IrcServer, chan: &String, hostmask: &String) -> bool {
 	let table = "abusers".to_string();
-	if !sql_table_check(&conn, table.clone()) {
+	if !sql_table_check(table.clone()) {
 		println!("{} table not found, creating...", &table);
-		if !sql_table_create(&conn, table.clone()) {
+		if !sql_table_create(table.clone()) {
 			let err: String = format!("No {} table exists and for some reason I cannot create one. Check the logs.", &table);
 			let _ = server.send_privmsg(&chan, &err);
 			return false;
 		}
 	}
-	
-	let statement: String = format!("SELECT count(*) FROM {} WHERE hostmask = $1", &table);
-	let hostmask: String = hostmask_only(&hostmask);
-	let result: i32 = conn.query_row(statement.as_str(), &[&hostmask], |row| {
-			row.get(0)
-	}).unwrap();
-	if result == 1 {
-		return true;
-	}
-	false
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return false;
+		},
+		Ok(conn) => {
+			let statement: String = format!("SELECT count(*) FROM {} WHERE hostmask = $1", &table);
+			let hostmask: String = hostmask_only(&hostmask);
+			let result: i32 = conn.query_row(statement.as_str(), &[&hostmask], |row| {
+					row.get(0)
+			}).unwrap();
+			if result == 1 {
+				return true;
+			}
+			return false;
+		},
+	};
 }
 
 fn hostmask_only(fullstring: &String) -> String {
@@ -1933,40 +2256,55 @@ fn sub_get_page(url: &String) -> String {
 	return page.to_string().trim().to_string();
 }
 
-fn sub_get_title(titleres: &Vec<Regex>, page: &String) -> String {
+fn sub_get_title(page: &String) -> String {
 	let mut title = "".to_string();
-	for regex in titleres.iter() {
-		let captures = regex.captures(page.as_str());
-		if captures.is_none() {
-			title = "".to_string();
-		}
-		else {
-			let cap = captures.unwrap().at(1).unwrap();
-			title = cap.to_string().trim().to_string();
-			break;
-		}
-	}
-	return title;
+	match TITLERES.lock() {
+		Err(err) => {
+			println!("Could not lock TITLERES: {:?}", err);
+			return "".to_string();
+		},
+		Ok(titleres) => {
+			for regex in titleres.iter() {
+				let captures = regex.captures(page.as_str());
+				if captures.is_none() {
+					title = "".to_string();
+				}
+				else {
+					let cap = captures.unwrap().at(1).unwrap();
+					title = cap.to_string().trim().to_string();
+					break;
+				}
+			}
+			return title;
+		},
+	};
 }
 
-fn sub_get_description(descres: &Vec<Regex>, page: &String) -> String {
+fn sub_get_description(page: &String) -> String {
 	let mut desc = "".to_string();
-	for regex in descres.iter() {
-		let captures = regex.captures(page.as_str());
-		if captures.is_none() {
-			desc = "".to_string();
-		}
-		else {
-			let unwrapped = captures.unwrap();
-			let cap = unwrapped.at(1).unwrap();
-			desc = cap.to_string().trim().to_string();
-			break;
-		}
-	}	
-	return desc;
+	match DESCRES.lock() {
+		Err(err) => {
+			println!("Could not lock DESCRES: {:?}", err);
+			return "".to_string();
+		},
+		Ok(descres) => {
+			for regex in descres.iter() {
+				let captures = regex.captures(page.as_str());
+				if captures.is_none() {
+					desc = "".to_string();
+				}
+				else {
+					let unwrapped = captures.unwrap();
+					let cap = unwrapped.at(1).unwrap();
+					desc = cap.to_string().trim().to_string();
+					break;
+				}
+			}	
+			return desc;
+		},
+	};
 }
 
-//let story = sub_build_story( &submitter, &description, &summary )
 fn sub_build_story(submitter: &String, description: &String, summary: &String, source: &String) -> String {
 	let story = format!("Submitted via IRC for {}<blockquote>{}</blockquote>{}\n\nSource: {}", submitter, description, summary, source).to_string();
 	return story;
@@ -2011,128 +2349,110 @@ fn sub_get_reskey(cookie: &String) -> String {
 	return reskey;
 }
 
-fn sub_get_cookie(botconfig: &mut BotConfig) -> String {
-	if botconfig.cookie != "".to_string() {
-		return botconfig.cookie.clone();
-	}
-	let url: String;
-	if DEBUG {
-		url = format!("https://dev.soylentnews.org/api.pl?m=auth&op=login&nick={}&pass={}", "MrPlow", &botconfig.snpass).to_string();
-	}
-	else {
-		url = format!("https://soylentnews.org/api.pl?m=auth&op=login&nick={}&pass={}", &botconfig.nick, &botconfig.snpass).to_string();
-	}
-	let mut dst = Vec::new();
-	let mut easy = Easy::new();
-	easy.url(url.as_str()).unwrap();
-	{
-		let transfer = easy.transfer();
-		headers_only(transfer, &mut dst);
-	}
-	if easy.response_code().unwrap_or(999) != 200 {
-		println!("got http response code {}", easy.response_code().unwrap_or(999));
-		return "".to_string();
-	}
+fn sub_get_cookie() -> String {
+	let mut cookie = "".to_string();
+	match BOTSTATE.lock() {
+		Err(err) => {
+			println!("Could not lock BOTSTATE: {:?}", err);
+			return "".to_string();
+		},
+		Ok(mut botstate) => {
+			if botstate.cookie != "".to_string() {
+				return botstate.cookie.clone();
+			}
+			let url: String;
+			match BOTCONFIG.lock() {
+				Err(err) => {
+					println!("Could not lock CONN: {:?}", err);
+					return "".to_string();
+				},
+				Ok(botconfig) => {
+					if DEBUG {
+						url = format!("https://dev.soylentnews.org/api.pl?m=auth&op=login&nick={}&pass={}", "MrPlow", &botconfig.pass).to_string();
+					}
+					else {
+						url = format!("https://soylentnews.org/api.pl?m=auth&op=login&nick={}&pass={}", &botconfig.nick, &botconfig.pass).to_string();
+					}
+				},
+			};
+			let mut dst = Vec::new();
+			let mut easy = Easy::new();
+			easy.url(url.as_str()).unwrap();
+			{
+				let transfer = easy.transfer();
+				headers_only(transfer, &mut dst);
+			}
+			if easy.response_code().unwrap_or(999) != 200 {
+				println!("got http response code {}", easy.response_code().unwrap_or(999));
+				return "".to_string();
+			}
 
-	let headers = str::from_utf8(&dst[..]).unwrap_or("").split("\n");
-	let mut cookie: String = "".to_string();
-	for foo in headers {
-		if foo.find("Set-Cookie:").unwrap_or(22) != 22 {
-			cookie = foo[12..].to_string().trim().to_string();
-			let ccookie = cookie.clone();
-			let strcookie = ccookie.as_str();
-			let end = strcookie.find("path=/;").unwrap_or(22_usize) + 7;
-			cookie = strcookie[..end].to_string().trim().to_string();
-		}
-	}
-	if cookie != "".to_string() {
-		botconfig.cookie = cookie.clone();
-	}
-	return cookie;
+			let headers = str::from_utf8(&dst[..]).unwrap_or("").split("\n");
+			for foo in headers {
+				if foo.find("Set-Cookie:").unwrap_or(22) != 22 {
+					cookie = foo[12..].to_string().trim().to_string();
+					let ccookie = cookie.clone();
+					let strcookie = ccookie.as_str();
+					let end = strcookie.find("path=/;").unwrap_or(22_usize) + 7;
+					cookie = strcookie[..end].to_string().trim().to_string();
+				}
+			}
+			if cookie != "".to_string() {
+				botstate.cookie = cookie.clone();
+			}
+			return cookie;
+		},
+	};
 }
 
-fn load_titleres(exists: Option<Vec<Regex>>) -> Vec<Regex> {
+fn load_titleres() {
 	let titleresf = OpenOptions::new().read(true).write(true).create(true).open("/home/bob/etc/snbot/titleres.txt");
 	if titleresf.is_err() {
 		println!("Error opening titleres.txt: {:?}", titleresf);
-		let wtf: Vec<Regex> = Vec::new();
-		return wtf;
+		return;
 	}
 	let unwrapped = &titleresf.unwrap();
 	let titleresfile = BufReader::new(unwrapped);
 
-	match exists {
-		None => {
-			let mut titleres: Vec<Regex> = Vec::new();
-			for line in titleresfile.lines() {
-				if line.is_ok() {
-					titleres.push(Regex::new(line.unwrap().as_str()).unwrap());
-				}
-			}
-			return titleres;
+	match TITLERES.lock() {
+		Err(err) => {
+			println!("Could not lock TITLERES: {:?}", err);
+			return;
 		},
-		Some(mut titleres) => {
+		Ok(mut titleres) => {
 			titleres.clear();
 			for line in titleresfile.lines() {
 				if line.is_ok() {
 					titleres.push(Regex::new(line.unwrap().as_str()).unwrap());
 				}
 			}
-			return titleres;
 		},
 	};
 }
 
-fn load_descres(exists: Option<Vec<Regex>>) -> Vec<Regex> {
+fn load_descres() {
 	let descresf = OpenOptions::new().read(true).write(true).create(true).open("/home/bob/etc/snbot/descres.txt");
 	if descresf.is_err() {
 		println!("Error opening descres.txt: {:?}", descresf);
-		let wtf: Vec<Regex> = Vec::new();
-		return wtf;
+		return;
 	}
 	let damnit = &descresf.unwrap();
 	let descresfile = BufReader::new(damnit);
 
-	match exists {
-		None => {
-			let mut descres: Vec<Regex> = Vec::new();
-			for line in descresfile.lines() {
-				if line.is_ok() {
-					descres.push(Regex::new(line.unwrap().as_str()).unwrap());
-				}
-			}
-			return descres;
+	match DESCRES.lock() {
+		Err(err) => {
+			println!("Could not lock DESCRES: {:?}", err);
+			return;
 		},
-		Some(mut descres) => {
+		Ok(mut descres) => {
 			descres.clear();
 			for line in descresfile.lines() {
 				if line.is_ok() {
 					descres.push(Regex::new(line.unwrap().as_str()).unwrap());
 				}
 			}
-			return descres;
 		},
 	};
-}
-
-fn load_channels(conn: &Connection) -> Vec<MyChannel> {
-	let mut channels: Vec<MyChannel> = Vec::new();
-	let mut stmt = conn.prepare("SELECT * FROM channels").unwrap();
-	let allrows = stmt.query_map(&[], |row| {
-		let iprotected: i32 = row.get(1);
-		let mut protected: bool = false;
-		if iprotected != 0 { protected = true; }
-		MyChannel {
-			name: row.get(0),
-			protected: protected,
-		}
-	}).unwrap();
-	for channel in allrows {
-		if channel.is_ok() {
-			channels.push(channel.unwrap());
-		}
-	}
-	return channels;
 }
 
 fn get_youtube(go_key: &String, query: &String) -> String {
@@ -2213,11 +2533,24 @@ fn send_submission(submission: &Submission) -> bool {
 	return true;
 }
 
-fn get_bing_token(botconfig: &BotConfig) -> String {
+fn get_bing_token() -> String {
+	let bi_key;
+	let bi_bytes;
+	let secretbytes;
+	match BOTCONFIG.lock() {
+		Err(err) => {
+			println!("Could not lock BOTCONFIG: {:?}", err);
+			return "".to_string();
+		},
+		Ok(botconfig) => {
+			bi_key = botconfig.bi_key.clone();
+			bi_bytes = bi_key.as_bytes();
+			secretbytes = bi_bytes;
+		},
+	};
 	let url = "https://datamarket.accesscontrol.windows.net/v2/OAuth2-13/";
 	let mut dst = Vec::new();
 	let mut easy = Easy::new();
-	let secretbytes = &botconfig.bi_key[..].as_bytes();
 	let postfields = format!("grant_type=client_credentials&scope=http://api.microsofttranslator.com&client_id=TMBuzzard_Translator&client_secret={}", easy.url_encode(secretbytes));
 	let postbytes = postfields.as_bytes();
 	easy.url(url).unwrap();
@@ -2266,7 +2599,7 @@ fn is_nick_here(server: &IrcServer, chan: &String, nick: &String) -> bool {
 }
 
 // Returns the number of ms until next recurrence if this is a recurring timer
-fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, conn: &Connection, timer: &TimerTypes) -> u64 {
+fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, timer: &TimerTypes) -> u64 {
 	match timer {
 		&TimerTypes::Action { ref chan, ref msg } => { let _ = server.send_action(&chan, &msg); return 0_u64; },
 		&TimerTypes::Message { ref chan, ref msg } => { let _ = server.send_privmsg(&chan, &msg); return 0_u64; },
@@ -2274,7 +2607,7 @@ fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, conn: &Connectio
 			match &command[..] {
 				"goodfairy" => {
 					let chan = "#fite".to_string();
-					command_goodfairy( &server, &conn, &chan );
+					command_goodfairy( &server, &chan );
 				},
 				_ => {},
 			};
@@ -2284,10 +2617,10 @@ fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, conn: &Connectio
 			match &command[..] {
 				"goodfairy" => { 
 					let chan = "#fite".to_string();
-					command_goodfairy( &server, &conn, &chan );
+					command_goodfairy( &server, &chan );
 				},
 				"scoreboard" => {
-					fitectl_scoreboard(&server, &conn, false);
+					fitectl_scoreboard(&server, false);
 				},
 				_ => {},
 			};
@@ -2308,39 +2641,44 @@ fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, conn: &Connectio
 			return 0_u64;
 		},
 		&TimerTypes::Savechars { ref attacker, ref defender } => {
-			save_character(&conn, &attacker);
-			save_character(&conn, &defender);
-			fitectl_scoreboard(&server, &conn, true);
+			save_character(&attacker);
+			save_character(&defender);
+			fitectl_scoreboard(&server, true);
 			return 0_u64;
 		},
 		_ => {return 0_u64;},
 	};
 }
 
-fn get_recurring_timers(conn: &Connection) -> Vec<TimerTypes> {
+fn get_recurring_timers() -> Vec<TimerTypes> {
 	let mut recurringTimers: Vec<TimerTypes> = Vec::new();
-	let mut stmt = conn.prepare("SELECT * FROM recurring_timers").unwrap();
-	let allrows = stmt.query_map(&[], |row| {
-		TimerTypes::Recurring {
-			every: row.get(0),
-			command: row.get(1),
-		}
-	}).unwrap();
-	for timer in allrows {
-		if timer.is_ok() {
-			recurringTimers.push(timer.unwrap());
-		}
-	}
+	match CONN.lock() {
+		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Ok(conn) => {
+			let mut stmt = conn.prepare("SELECT * FROM recurring_timers").unwrap();
+			let allrows = stmt.query_map(&[], |row| {
+				TimerTypes::Recurring {
+					every: row.get(0),
+					command: row.get(1),
+				}
+			}).unwrap();
+			for timer in allrows {
+				if timer.is_ok() {
+					recurringTimers.push(timer.unwrap());
+				}
+			}
+		},
+	};
 	let recurringTimers = recurringTimers;
 	return recurringTimers;
 }
 
 // Begin fite code
-fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, attacker: &String, target: &String) -> bool {
+fn fite(server: &IrcServer, timertx: &Sender<Timer>, attacker: &String, target: &String) -> bool {
 	let spamChan = "#fite".to_string();
 	let mut msgDelay = 0_u64;
-	let mut oAttacker: Character = get_character(&conn, &attacker);
-	let mut oDefender: Character = get_character(&conn, &target);
+	let mut oAttacker: Character = get_character(&attacker);
+	let mut oDefender: Character = get_character(&target);
 	let mut rAttacker: &mut Character;
 	let mut rDefender: &mut Character;
 	let mut surprise: bool = false;
@@ -2648,11 +2986,19 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, conn: &Connection, attacker
 	return true;
 }
 
-fn save_character(conn: &Connection, character: &Character) {
+fn save_character(character: &Character) {
 	let time: i64 = time::now_utc().to_timespec().sec;
 	let level = character.level as i64;
 	let hp = character.hp as i64;
-	conn.execute("UPDATE characters SET level = ?, hp = ?, ts = ? WHERE nick = ?", &[&level, &hp, &time, &character.nick.as_str()]).unwrap();
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return;
+		},
+		Ok(conn) => {
+			conn.execute("UPDATE characters SET level = ?, hp = ?, ts = ? WHERE nick = ?", &[&level, &hp, &time, &character.nick.as_str()]).unwrap();
+		},
+	};
 }
 
 fn roll_once(sides: u8) -> u8 {
@@ -2675,21 +3021,37 @@ fn roll_dmg() -> u8 {
 	return total;
 }
 
-fn character_exists(conn: &Connection, nick: &String) -> bool {
-	let count: i32 = conn.query_row("SELECT count(nick) FROM characters WHERE nick = ?", &[&nick.as_str()], |row| {
-		row.get(0)
-	}).unwrap();
-	if count == 1 {
-		return true;
-	}
-	else {
-		return false;
-	}
+fn character_exists(nick: &String) -> bool {
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return false;
+		},
+		Ok(conn) => {
+			let count: i32 = conn.query_row("SELECT count(nick) FROM characters WHERE nick = ?", &[&nick.as_str()], |row| {
+				row.get(0)
+			}).unwrap();
+			if count == 1 {
+				return true;
+			}
+			else {
+				return false;
+			}
+		},
+	};
 }
 
-fn create_character(conn: &Connection, nick: &String) {
+fn create_character(nick: &String) {
 	let time: i64 = time::now_utc().to_timespec().sec;
-	conn.execute("INSERT INTO characters VALUES(?, 1, 10, 'fist', 'grungy t-shirt', ?)", &[&nick.as_str(), &time]).unwrap();
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return;
+		},
+		Ok(conn) => {
+			conn.execute("INSERT INTO characters VALUES(?, 1, 10, 'fist', 'grungy t-shirt', ?)", &[&nick.as_str(), &time]).unwrap();
+		},
+	};
 	return;
 }
 
@@ -2702,29 +3064,45 @@ fn is_alive(character: &Character) -> bool {
 	}
 }
 
-fn get_character(conn: &Connection, nick: &String) -> Character {
-	let (leveli, hpi, weapon, armor, tsi) = conn.query_row("SELECT * FROM characters WHERE nick = ?", &[&nick.as_str()], |row| {
-		(
-			row.get(1),
-			row.get(2),
-			row.get(3),
-			row.get(4),
-			row.get(5),
-		)
-	}).unwrap_or((0_i64, 0_i64, "".to_string(), "".to_string(), 0_i64));
-	let character: Character = Character {
-			nick: nick.clone(),
-			level: leveli as u64,
-			hp: hpi as u64,
-			weapon: weapon,
-			armor: armor,
-			ts: tsi as u64,
-			initiative: 0_u8,
+fn get_character(nick: &String) -> Character {
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return Character {
+				nick: "".to_string(),
+				level: 0,
+				hp: 0,
+				weapon: "".to_string(),
+				armor: "".to_string(),
+				ts: 0,
+				initiative: 0,
+			};
+		},
+		Ok(conn) => {
+			let (leveli, hpi, weapon, armor, tsi) = conn.query_row("SELECT * FROM characters WHERE nick = ?", &[&nick.as_str()], |row| {
+				(
+					row.get(1),
+					row.get(2),
+					row.get(3),
+					row.get(4),
+					row.get(5),
+				)
+			}).unwrap_or((0_i64, 0_i64, "".to_string(), "".to_string(), 0_i64));
+			let character: Character = Character {
+				nick: nick.clone(),
+				level: leveli as u64,
+				hp: hpi as u64,
+				weapon: weapon,
+				armor: armor,
+				ts: tsi as u64,
+				initiative: 0_u8,
+			};
+			return character;
+		},
 	};
-	return character;
 }
 
-fn fitectl_scoreboard(server: &IrcServer, conn: &Connection, quiet: bool) {
+fn fitectl_scoreboard(server: &IrcServer, quiet: bool) {
 	let spamChan = "#fite".to_string();
 	struct Row {
 		nick: String,
@@ -2734,57 +3112,65 @@ fn fitectl_scoreboard(server: &IrcServer, conn: &Connection, quiet: bool) {
 		a: String,
 	}
 
-	let mut stmt = conn.prepare("SELECT * FROM characters ORDER BY level DESC, hp DESC, nick").unwrap();
-	let allrows = stmt.query_map(&[], |row| {
-		Row {
-			nick: row.get(0),
-			lvl: row.get(1),
-			hp: row.get(2),
-			w: row.get(3),
-			a: row.get(4),
-		}
-	}).unwrap();
-	
-	let mut f;
-	match File::create("/srv/sylnt.us/fitescoreboard.html").map_err(|e| e.to_string()) {
-		Ok(file) => {f = file;},
-		Err(err) => { println!("{}", err); return; },
-	}
-
-	let mut outString: String = "<html><head><link rel='stylesheet' type='text/css' href='/css/fite.css'><title>#fite Scoreboard</title></head><body><table>
-<tr id='header'><td>Nick</td><td>Level</td><td>HitPoints</td><td>Weapon</td><td>Armor</td></tr>\n".to_string();
-
-	for row in allrows {
-		let mrow = row.unwrap();
-		let headed;
-		if mrow.hp == 0 {
-			headed = " class='hedead'";
-		}
-		else {
-			headed = "";
-		}
-		
-		let msg = format!("<tr{}><td>{}</td><td class='no'>{}</td><td class='hp'>{}</td><td>{}</td><td>{}</td></tr>\n", headed, mrow.nick, mrow.lvl, mrow.hp, mrow.w, mrow.a);
-		outString.push_str(&msg.as_str());
-	}
-	outString.push_str("</table></body></html>");
-
-	let outData = outString.as_bytes();
-	match f.write_all(outData) {
-		Ok(_) => {
-			let msg = format!("#fite scoreboard updated: https://sylnt.us/fitescoreboard.html");
-			if !quiet {
-				let _ = server.send_privmsg(&spamChan, &msg);
-			}
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return;
 		},
-		Err(err) => { println!("{}", err); },
+		Ok(conn) => {
+			let mut stmt = conn.prepare("SELECT * FROM characters ORDER BY level DESC, hp DESC, nick").unwrap();
+			let allrows = stmt.query_map(&[], |row| {
+				Row {
+					nick: row.get(0),
+					lvl: row.get(1),
+					hp: row.get(2),
+					w: row.get(3),
+					a: row.get(4),
+				}
+			}).unwrap();
+	
+			let mut f;
+			match File::create("/srv/sylnt.us/fitescoreboard.html").map_err(|e| e.to_string()) {
+				Ok(file) => {f = file;},
+				Err(err) => { println!("{}", err); return; },
+			}
+
+			let mut outString: String = "<html><head><link rel='stylesheet' type='text/css' href='/css/fite.css'><title>#fite Scoreboard</title></head><body><table>
+				<tr id='header'><td>Nick</td><td>Level</td><td>HitPoints</td><td>Weapon</td><td>Armor</td></tr>\n".to_string();
+
+			for row in allrows {
+				let mrow = row.unwrap();
+				let headed;
+				if mrow.hp == 0 {
+					headed = " class='hedead'";
+				}
+				else {
+					headed = "";
+				}
+		
+				let msg = format!("<tr{}><td>{}</td><td class='no'>{}</td><td class='hp'>{}</td><td>{}</td><td>{}</td></tr>\n", headed, mrow.nick, mrow.lvl, mrow.hp, mrow.w, mrow.a);
+				outString.push_str(&msg.as_str());
+			}
+			outString.push_str("</table></body></html>");
+
+			let outData = outString.as_bytes();
+			match f.write_all(outData) {
+				Ok(_) => {
+					let msg = format!("#fite scoreboard updated: https://sylnt.us/fitescoreboard.html");
+					if !quiet {
+						let _ = server.send_privmsg(&spamChan, &msg);
+					}
+				},
+				Err(err) => { println!("{}", err); },
+			};
+		},
 	};
 	return;
 }
 
-fn fitectl_status(server: &IrcServer, conn: &Connection, chan: &String, nick: &String) {
-	if !character_exists(&conn, &nick) {
-		create_character(&conn, &nick);
+fn fitectl_status(server: &IrcServer, chan: &String, nick: &String) {
+	if !character_exists(&nick) {
+		create_character(&nick);
 	}
 	
 	struct Row {
@@ -2794,23 +3180,32 @@ fn fitectl_status(server: &IrcServer, conn: &Connection, chan: &String, nick: &S
 		w: String,
 		a: String,
 	}
-	let result: Row = conn.query_row("SELECT * FROM characters WHERE nick = ?", &[&nick.as_str()], |row| {
-		Row {
-			nick: row.get(0),
-			lvl: row.get(1),
-			hp: row.get(2),
-			w: row.get(3),
-			a: row.get(4),
-		}
-	}).unwrap();
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return;
+		},
+		Ok(conn) => {
+			let result: Row = conn.query_row("SELECT * FROM characters WHERE nick = ?", &[&nick.as_str()], |row| {
+				Row {
+					nick: row.get(0),
+					lvl: row.get(1),
+					hp: row.get(2),
+					w: row.get(3),
+					a: row.get(4),
+				}
+			}).unwrap();
 
-	let msg = format!("#fite {} level: {}, hp: {}, weapon: '{}', armor: '{}'", result.nick, result.lvl, result.hp, result.w, result.a);
-	let _ = server.send_privmsg(&chan, &msg);
+			let msg = format!("#fite {} level: {}, hp: {}, weapon: '{}', armor: '{}'", result.nick, result.lvl, result.hp, result.w, result.a);
+			let _ = server.send_privmsg(&chan, &msg);
+		},
+	};
+	return;
 }
 
-fn fitectl_weapon(server: &IrcServer, conn: &Connection, chan: &String, nick: &String, weapon: String) {
-	if !character_exists(&conn, &nick) {
-		create_character(&conn, &nick);
+fn fitectl_weapon(server: &IrcServer, chan: &String, nick: &String, weapon: String) {
+	if !character_exists(&nick) {
+		create_character(&nick);
 	}
 	let saveWeapon;
 	if weapon.contains("<") || weapon.contains(">") || weapon.len() > 32 {
@@ -2819,14 +3214,23 @@ fn fitectl_weapon(server: &IrcServer, conn: &Connection, chan: &String, nick: &S
 	else {
 		saveWeapon = weapon;
 	}
-	conn.execute("UPDATE characters SET weapon = ? WHERE nick = ?", &[&saveWeapon.as_str(), &nick.as_str()]).unwrap();
-	let msg = format!("#fite weapon for {} set to {}.", &nick, &saveWeapon);
-	let _ = server.send_privmsg(&chan, &msg);
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return;
+		},
+		Ok(conn) => {
+			conn.execute("UPDATE characters SET weapon = ? WHERE nick = ?", &[&saveWeapon.as_str(), &nick.as_str()]).unwrap();
+			let msg = format!("#fite weapon for {} set to {}.", &nick, &saveWeapon);
+			let _ = server.send_privmsg(&chan, &msg);
+		},
+	};
+	return;
 }
 
-fn fitectl_armor(server: &IrcServer, conn: &Connection, chan: &String, nick: &String, armor: String) {
-	if !character_exists(&conn, &nick) {
-		create_character(&conn, &nick);
+fn fitectl_armor(server: &IrcServer, chan: &String, nick: &String, armor: String) {
+	if !character_exists(&nick) {
+		create_character(&nick);
 	}
 	let saveArmor;
 	if armor.contains("<") || armor.contains(">") || armor.len() > 32 {
@@ -2835,7 +3239,16 @@ fn fitectl_armor(server: &IrcServer, conn: &Connection, chan: &String, nick: &St
 	else {
 		saveArmor = armor;
 	}
-	conn.execute("UPDATE characters SET armor = ? WHERE nick = ?", &[&saveArmor.as_str(), &nick.as_str()]).unwrap();
-	let msg = format!("#fite armor for {} set to {}.", &nick, &saveArmor);
-	let _ = server.send_privmsg(&chan, &msg);
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:?}", err);
+			return;
+		},
+		Ok(conn) => {
+			conn.execute("UPDATE characters SET armor = ? WHERE nick = ?", &[&saveArmor.as_str(), &nick.as_str()]).unwrap();
+			let msg = format!("#fite armor for {} set to {}.", &nick, &saveArmor);
+			let _ = server.send_privmsg(&chan, &msg);
+		},
+	};
+	return;
 }
