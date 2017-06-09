@@ -538,7 +538,7 @@ fn cmd_check(checkme: &[u8], against: &str, exact: bool) -> bool {
 
 fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sender<Timer>, nick: &String, hostmask: &String, chan: &String, said: &String) {
 	let prefix: String;
-
+	println!("Reached process_command");
 	{
 		match BOTCONFIG.lock() {
 			Err(err) => {
@@ -550,6 +550,7 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 			},
 		};
 	}
+	println!("Got lock in process_command");
 	let maskonly = hostmask_only(&hostmask);
 	let prefixlen = prefix.len();
 	let saidlen = said.len();
