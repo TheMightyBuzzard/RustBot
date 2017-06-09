@@ -538,7 +538,6 @@ fn cmd_check(checkme: &[u8], against: &str, exact: bool) -> bool {
 
 fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sender<Timer>, nick: &String, hostmask: &String, chan: &String, said: &String) {
 	let prefix: String;
-	println!("Reached process_command");
 	{
 		match BOTCONFIG.lock() {
 			Err(err) => {
@@ -550,7 +549,6 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 			},
 		};
 	}
-	println!("Got lock in process_command");
 	let maskonly = hostmask_only(&hostmask);
 	let prefixlen = prefix.len();
 	let saidlen = said.len();
@@ -987,9 +985,9 @@ fn command_goodfairy(server: &IrcServer, chan: &String) {
 			conn.execute("UPDATE characters SET hp = level + 100 WHERE nick = ?", &[&lucky]).unwrap();
 			let _ = server.send_privmsg(&chan, "#fite The good fairy has come along and revived everyone");
 			let _ = server.send_privmsg(&chan, format!("#fite the gods have smiled upon {}", &lucky).as_str() );
-			fitectl_scoreboard(&server, true);
 		},
 	};
+	fitectl_scoreboard(&server, true);
 }
 
 fn command_fite(server: &IrcServer, timertx: &Sender<Timer>, chan: &String, attacker: &String, target: String) -> bool {
