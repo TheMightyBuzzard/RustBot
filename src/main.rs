@@ -2776,7 +2776,7 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, attacker: &String, target: 
 	loop {
 		// whoever won init's turn
 		let mut attackRoll: u8 = roll_once(20_u8);
-		let mut damageRoll: u8 = 0;
+		let mut damageRoll: u64 = 0;
 		// Previously Fumbled
 		if aFumble {
 			aFumble = false;
@@ -2798,9 +2798,9 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, attacker: &String, target: 
 			damageRoll = damageRoll * 2;
 			let msg = format!("{}{} smites the everlovin crap out of {} with a {} ({}04{}{})", &clearall, &anick, &dnick, &aweapon, &color, damageRoll, &color);
 			if damageRoll as u64 > rDefender.hp {
-				damageRoll = rDefender.hp as u8;
+				damageRoll = rDefender.hp;
 			}
-			rDefender.hp = rDefender.hp - (damageRoll as u64);
+			rDefender.hp = rDefender.hp - damageRoll;
 			let sendme: Timer = Timer {
 				delay: msgDelay,
 				action: TimerTypes::Message{
@@ -2817,9 +2817,9 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, attacker: &String, target: 
 			}
 			let msg = format!("{}{} clobbers {} upside their head with a {} ({}14{}{})", &clearall, &anick, &dnick, &aweapon, &color, damageRoll, &color);
 			if damageRoll as u64 > rDefender.hp {
-				damageRoll = rDefender.hp as u8;
+				damageRoll = rDefender.hp;
 			}
-			rDefender.hp = rDefender.hp - (damageRoll as u64);
+			rDefender.hp = rDefender.hp - damageRoll;
 			let sendme: Timer = Timer {
 				delay: msgDelay,
 				action: TimerTypes::Message{
@@ -2901,9 +2901,9 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, attacker: &String, target: 
 			damageRoll = damageRoll * 2;
 			let msg = format!("{}{} smites the everlovin crap out of {} with a {} ({}04{}{})", &clearall, &dnick, &anick, &dweapon, &color, damageRoll, &color);
 			if damageRoll as u64 > rAttacker.hp {
-				damageRoll = rAttacker.hp as u8;
+				damageRoll = rAttacker.hp;
 			}
-			rAttacker.hp = rAttacker.hp - (damageRoll as u64);
+			rAttacker.hp = rAttacker.hp - damageRoll;
 			let sendme: Timer = Timer {
 				delay: msgDelay,
 				action: TimerTypes::Message{
@@ -2920,9 +2920,9 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, attacker: &String, target: 
 			}
 			let msg = format!("{}{} clobbers {} upside their head with a {} ({}14{}{})", &clearall, &dnick, &anick, &dweapon, &color, damageRoll, &color);
 			if damageRoll as u64 > rAttacker.hp {
-				damageRoll = rAttacker.hp as u8;
+				damageRoll = rAttacker.hp;
 			}
-			rAttacker.hp = rAttacker.hp - (damageRoll as u64);
+			rAttacker.hp = rAttacker.hp - damageRoll;
 			let sendme: Timer = Timer {
 				delay: msgDelay,
 				action: TimerTypes::Message{
@@ -3024,12 +3024,12 @@ fn roll_once(sides: u8) -> u8 {
 	return roll;
 }
 
-fn roll_dmg() -> u8 {
-	let mut roll = roll_once(6_u8);
-	let mut total = 0_u8;
+fn roll_dmg() -> u64 {
+	let mut roll = roll_once(6_u8) as u64;
+	let mut total = 0_u64;
 	total += roll;
 	while roll == 6 {
-		roll = roll_once(6_u8);
+		roll = roll_once(6_u8) as u64;
 		total += roll;
 	}
 	let total = total;
