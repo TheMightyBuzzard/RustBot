@@ -831,8 +831,8 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 				let target = noprefix["fite ".len()..].trim().to_string();
 				let stop = command_fite(&server, &timertx, &chan, &nick, target);
 				// Stop fighting if we didn't actually have a fite
-				botstate.is_fighting = false;
 				if stop {
+					botstate.is_fighting = false;
 					fitectl_scoreboard(&server, true);
 				}
 				return;
@@ -991,13 +991,6 @@ fn command_goodfairy(server: &IrcServer, chan: &String) {
 }
 
 fn command_fite(server: &IrcServer, timertx: &Sender<Timer>, chan: &String, attacker: &String, target: String) -> bool {
-	let blocklist = vec!["boru", "stderr"];
-	for checknick in blocklist.iter() {
-		if **checknick == *target.as_str() {
-			let _ = server.send_privmsg(&chan, "#fite I'm sorry, Dave, I can't do that.");
-			return false;
-		}
-	}
 	if is_nick_here(&server, &chan, &target) {
 		if !sql_table_check("characters".to_string()) {
 			println!("`characters` table not found, creating...");
