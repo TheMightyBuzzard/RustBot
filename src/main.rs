@@ -830,10 +830,11 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 				botstate.is_fighting = true;
 				let target = noprefix["fite ".len()..].trim().to_string();
 				let stop = command_fite(&server, &timertx, &chan, &nick, target);
-				// Stop fighting if we didn't actually have a fite
 				if stop {
-					botstate.is_fighting = false;
 					fitectl_scoreboard(&server, true);
+				}
+				else {
+					botstate.is_fighting = false;
 				}
 				return;
 			},
