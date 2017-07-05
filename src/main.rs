@@ -163,7 +163,7 @@ struct Timer {
 	action: TimerTypes,
 }
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.2.1";
 const SOURCE: &str = "https://github.com/TheMightyBuzzard/RustBot";
 const DEBUG: bool = false;
 const ARMOR_CLASS: u8 = 10;
@@ -220,9 +220,9 @@ fn main() {
 			username: Some(botconfig.nick.clone()),
 			realname: Some(botconfig.nick.clone()),
 			server: Some(botconfig.server.clone()),
-			port: Some(6697),
+			port: Some(6667),
 			password: Some(botconfig.pass.clone()),
-			use_ssl: Some(true),
+			use_ssl: Some(false),
 			encoding: Some("UTF-8".to_string()),
 			version: Some(VERSION.to_string()),
 			source: Some(SOURCE.to_string()),
