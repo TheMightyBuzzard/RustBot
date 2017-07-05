@@ -220,9 +220,9 @@ fn main() {
 			username: Some(botconfig.nick.clone()),
 			realname: Some(botconfig.nick.clone()),
 			server: Some(botconfig.server.clone()),
-			port: Some(6667),
+			port: Some(6697),
 			password: Some(botconfig.pass.clone()),
-			use_ssl: Some(false),
+			use_ssl: Some(true),
 			encoding: Some("UTF-8".to_string()),
 			version: Some(VERSION.to_string()),
 			source: Some(SOURCE.to_string()),
@@ -235,7 +235,12 @@ fn main() {
 			ghost_sequence: Some(vec!("RECOVER".to_string())),
 			should_ghost: Some(true),
 			nick_password: Some(botconfig.pass.clone()),
-			options: None
+			options: None,
+			burst_window_length: Some(8),
+			max_messages_in_burst: Some(24),
+			cert_path: None,
+			use_mock_connection: Some(false),
+			mock_initial_value: None
 		}
 	).unwrap();
 	botconfig.destroy();
@@ -329,14 +334,14 @@ fn main() {
 	}
 
 	// let's have us some async Message handling
-	let (msgtx, msgrx) = mpsc::channel::<irc::client::data::Message>();
+	let (msgtx, msgrx) = mpsc::channel::<irc::proto::message::Message>();
 	{	
 		let server = server.clone();
 		let _ = thread::spawn(move || {
-			for message in server.iter() {
-				let umsg = message.unwrap();
+			let _ = server.for_each_incoming(|message| {
+				let umsg = message.clone();
 				msgtx.send(umsg).unwrap();
-			}
+			});
 		});
 	}
 
@@ -366,7 +371,7 @@ fn main() {
 				let nick = umessage.source_nickname();
 				let snick: String;
 				match umessage.command {
-					irc::client::data::command::Command::PRIVMSG(ref chan, ref untrimmed) => {
+					irc::proto::command::Command::PRIVMSG(ref chan, ref untrimmed) => {
 						let said = untrimmed.trim_right().to_string();
 						let hostmask = umessage.prefix.clone().unwrap().to_string();
 						snick = nick.unwrap().to_string();
@@ -394,8 +399,8 @@ fn main() {
 							continue;
 						}
 					},
-					irc::client::data::command::Command::PING(_,_) => {continue;},
-					irc::client::data::command::Command::PONG(_,_) => {
+					irc::proto::command::Command::PING(_,_) => {continue;},
+					irc::proto::command::Command::PONG(_,_) => {
 						match feedbackrx.try_recv() {
 							Err(_) => { },
 							Ok(timer) => {
@@ -947,7 +952,7 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 }
 
 fn do_raw(server: &IrcServer, data: &str) {
-	let dome = irc::client::data::command::Command::Raw(data.to_string().clone(), vec![], None);
+	let dome = irc::proto::command::Command::Raw(data.to_string().clone(), vec![], None);
 	if !server.send(dome).is_ok() {
 		println!("got some sort of error in processing a raw command");
 	}
