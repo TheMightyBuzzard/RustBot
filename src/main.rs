@@ -163,7 +163,7 @@ struct Timer {
 	action: TimerTypes,
 }
 
-const VERSION: &str = "0.2.1";
+const VERSION: &str = "0.2.2";
 const SOURCE: &str = "https://github.com/TheMightyBuzzard/RustBot";
 const DEBUG: bool = false;
 const ARMOR_CLASS: u8 = 10;
@@ -334,6 +334,7 @@ fn main() {
 	}
 
 	// let's have us some async Message handling
+	/*
 	let (msgtx, msgrx) = mpsc::channel::<irc::proto::message::Message>();
 	{	
 		let server = server.clone();
@@ -344,7 +345,7 @@ fn main() {
 			});
 		});
 	}
-
+	*/
 
 	let tGoodfairy = Timer {
 		delay: 5000_u64,
@@ -354,84 +355,79 @@ fn main() {
 	};
 	let _ = timertx.send(tGoodfairy);
 
-	// main loop
-	let onems = Duration::from_millis(1);
-	loop {
-		match msgrx.try_recv() {
-			Err(err) => {
-				match err {
-					std::sync::mpsc::TryRecvError::Empty => {thread::sleep(onems);},
-					std::sync::mpsc::TryRecvError::Disconnected => {
-						println!("Lost socket to message iterator thread, shutting down!");
-						exit(1);
-					},
-				};
-			},
-			Ok(umessage) => {
-				let nick = umessage.source_nickname();
-				let snick: String;
-				match umessage.command {
-					irc::proto::command::Command::PRIVMSG(ref chan, ref untrimmed) => {
-						let said = untrimmed.trim_right().to_string();
-						let hostmask = umessage.prefix.clone().unwrap().to_string();
-						snick = nick.unwrap().to_string();
-						println!("{:?}", umessage);
+	//let (whotx, whorx) = mpsc::channel::<irc::proto::response::Response::RPL_WHOREPLY>();
 
-						if check_messages(&snick) {
-							deliver_messages(&server, &snick);
-						}
+	// main loop
+	let _ = server.for_each_incoming(|message| {
+		let umessage = message.clone();
+		let nick = umessage.source_nickname();
+		let snick: String;
+		match umessage.command {
+			irc::proto::command::Command::PRIVMSG(ref chan, ref untrimmed) => {
+				let said = untrimmed.trim_right().to_string();
+				let hostmask = umessage.prefix.clone().unwrap().to_string();
+				snick = nick.unwrap().to_string();
+				println!("{:?}", umessage);
+				if check_messages(&snick) {
+					deliver_messages(&server, &snick);
+				}
 
 	
-						if is_action(&said) {
-							let mut asaid = said.clone();
-							asaid = asaid[8..].to_string();
-							let asaidend = asaid.len() - 1;
-							asaid = asaid[..asaidend].to_string();
-							log_seen(&chan, &snick, &hostmask, &asaid, 1);
-							process_action(&server, &snick, &chan, &said);
+				if is_action(&said) {
+					let mut asaid = said.clone();
+					asaid = asaid[8..].to_string();
+					let asaidend = asaid.len() - 1;
+					asaid = asaid[..asaidend].to_string();
+					log_seen(&chan, &snick, &hostmask, &asaid, 1);
+					process_action(&server, &snick, &chan, &said);
+				}
+				else if is_command(&said) {
+					process_command(&server, &subtx, &timertx, &snick, &hostmask, &chan, &said);
+					log_seen(&chan, &snick, &hostmask, &said, 0);
+				}
+				else {
+					log_seen(&chan, &snick, &hostmask, &said, 0);
+				}
+			},
+			irc::proto::command::Command::PING(_,_) => {},
+			irc::proto::command::Command::PONG(_,_) => {
+				match feedbackrx.try_recv() {
+					Err(_) => { },
+					Ok(timer) => {
+						if DEBUG {
+							println!("{:?}", timer);
 						}
-						else if is_command(&said) {
-							process_command(&server, &subtx, &timertx, &snick, &hostmask, &chan, &said);
-							log_seen(&chan, &snick, &hostmask, &said, 0);
-						}
-						else {
-							log_seen(&chan, &snick, &hostmask, &said, 0);
-							continue;
-						}
-					},
-					irc::proto::command::Command::PING(_,_) => {continue;},
-					irc::proto::command::Command::PONG(_,_) => {
-						match feedbackrx.try_recv() {
-							Err(_) => { },
-							Ok(timer) => {
-								if DEBUG {
-									println!("{:?}", timer);
-								}
-								match timer.action {
-									TimerTypes::Feedback {ref command} => {
-										match &command[..] {
-											"fiteoff" => {
-												match BOTSTATE.lock() {
-													Err(err) => println!("Error locking BOTSTATE: {:?}", err),
-													Ok(mut botstate) => botstate.is_fighting = false,
-												};
-											},
-											_ => {},
+						match timer.action {
+							TimerTypes::Feedback {ref command} => {
+								match &command[..] {
+									"fiteoff" => {
+										match BOTSTATE.lock() {
+											Err(err) => println!("Error locking BOTSTATE: {:?}", err),
+											Ok(mut botstate) => botstate.is_fighting = false,
 										};
 									},
 									_ => {},
 								};
-								//qTimers.push(timer);
-							}	
+							},
+							_ => {},
 						};
-						println!("{:?}", umessage);
-						continue;
-					},
-					_ => println!("{:?}", umessage)
-				}
+						//qTimers.push(timer);
+					}	
+				};
+				println!("{:?}", umessage);
 			},
+			irc::proto::command::Command::Response(ref code, ref argsvec, ref suffixopt) => {
+				match *code {
+					irc::proto::response::Response::RPL_WHOREPLY => {
+						println!("argsvec: {:?}\nsuffixopt: {:?}\n", &argsvec, &suffixopt);
+						//whotx.send()
+					},
+					_ => {},
+				};
+			},
+			_ => {}, //println!("{:?}", umessage),
 		};
-	}
+	});
 }
 
 fn get_bot_config(botnick: &String) -> BotConfig {
@@ -1999,6 +1995,7 @@ fn sql_get_schema(table: &String) -> String {
 		"fake_weather" => "CREATE TABLE fake_weather(location TEXT PRIMARY KEY NOT NULL, forecast TEXT NOT NULL)".to_string(),
 		"weather_aliases" => "CREATE TABLE weather_aliases(fake_location TEXT PRIMARY KEY NOT NULL, real_location TEXT NOT NULL)".to_string(),
 		"characters" => "CREATE TABLE characters(nick TEXT PRIMARY KEY NOT NULL, level UNSIGNED INT(8), hp UNSIGNED INT(8), weapon TEXT NOT NULL DEFAULT 'fist', armor TEXT NOT NULL DEFAULT 'grungy t-shirt', ts UNSIGNED INT(8))".to_string(),
+		"fite" => "CREATE TABLE fite(nick TEXT PRIMARY KEY NOT NULL, level UNSIGNED INT, hp UNSIGNED INT, weapon TEXT NOT NULL DEFAULT 'fist', armor TEXT NOT NULL DEFAULT ;grungy t-shirt', ts UNSIGNED INT)".to_string(),
 		_ => "".to_string(),
 	}
 }
@@ -2163,7 +2160,7 @@ fn is_admin(nick: &String) -> bool {
 	}
 }
 
-fn _is_bot(server: &IrcServer, chan: &String, hostmask: &String) -> bool {
+fn is_bot(server: &IrcServer, chan: &String, hostmask: &String) -> bool {
 	let table = "bots".to_string();
 	if !sql_table_check(table.clone()) {
 		println!("{} table not found, creating...", &table);
@@ -2610,6 +2607,11 @@ fn is_nick_here(server: &IrcServer, chan: &String, nick: &String) -> bool {
 		}
 	}
 	return false;
+}
+
+fn is_nick_registered(server: &IrcServer, nick: &String) {
+	let cmd = format!("WHO {} %na", &nick);
+	do_raw(&server, &cmd.as_str());
 }
 
 // Returns the number of ms until next recurrence if this is a recurring timer
