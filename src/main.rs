@@ -173,6 +173,14 @@ struct NSResponse {
 	nsname: String,
 }
 
+#[derive(Debug)]
+struct MyCommand {
+	snick: String,
+	hostmask: String,
+	chan: String,
+	said: String,
+}
+
 const VERSION: &str = "0.2.2";
 const SOURCE: &str = "https://github.com/TheMightyBuzzard/RustBot";
 const DEBUG: bool = false;
@@ -367,6 +375,18 @@ fn main() {
 
 	let (whotx, whorx) = mpsc::channel::<NSResponse>();
 
+	// let's have us some async command handling
+	let (cmdtx, cmdrx) = mpsc::channel::<MyCommand>();
+	{
+		let server = server.clone();
+		let _ = thread::spawn(move || {
+			match cmdrx.try_recv() {
+				Err(_) => {},
+				Ok(command) => process_command(&server, &subtx, &timertx, &whorx, &command.snick, &command.hostmask, &command.chan, &command.said),
+			};
+		});
+	}
+
 	// main loop
 	let _ = server.for_each_incoming(|message| {
 		let umessage = message.clone();
@@ -391,7 +411,14 @@ fn main() {
 					process_action(&server, &snick, &chan, &said);
 				}
 				else if is_command(&said) {
-					process_command(&server, &subtx, &timertx, &whorx, &snick, &hostmask, &chan, &said);
+					//process_command(&server, &subtx, &timertx, &whorx, &snick, &hostmask, &chan, &said);
+					let command = MyCommand {
+						snick:snick.clone(),
+						hostmask: hostmask.clone(),
+						chan: chan.clone(),
+						said: said.clone(),
+					};
+					let _ = cmdtx.send(command);
 					log_seen(&chan, &snick, &hostmask, &said, 0);
 				}
 				else {
