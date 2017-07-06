@@ -418,7 +418,9 @@ fn main() {
 						chan: chan.clone(),
 						said: said.clone(),
 					};
-					let _ = cmdtx.send(command);
+					println!("created command: {:?}", &command);
+					let foo = cmdtx.send(command);
+					println!("result: {:?}", &foo);
 					log_seen(&chan, &snick, &hostmask, &said, 0);
 				}
 				else {
