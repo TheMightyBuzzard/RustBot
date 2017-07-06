@@ -163,6 +163,14 @@ struct Timer {
 	action: TimerTypes,
 }
 
+#[derive(Debug)]
+struct NSResponse {
+	username: String,
+	hostmask: String,
+	nickname: String,
+	nsname: String,
+}
+
 const VERSION: &str = "0.2.2";
 const SOURCE: &str = "https://github.com/TheMightyBuzzard/RustBot";
 const DEBUG: bool = false;
@@ -355,7 +363,7 @@ fn main() {
 	};
 	let _ = timertx.send(tGoodfairy);
 
-	//let (whotx, whorx) = mpsc::channel::<irc::proto::response::Response::RPL_WHOREPLY>();
+	let (whotx, whorx) = mpsc::channel::<NSResponse>();
 
 	// main loop
 	let _ = server.for_each_incoming(|message| {
@@ -367,7 +375,6 @@ fn main() {
 				let said = untrimmed.trim_right().to_string();
 				let hostmask = umessage.prefix.clone().unwrap().to_string();
 				snick = nick.unwrap().to_string();
-				println!("{:?}", umessage);
 				if check_messages(&snick) {
 					deliver_messages(&server, &snick);
 				}
@@ -414,13 +421,23 @@ fn main() {
 						//qTimers.push(timer);
 					}	
 				};
-				println!("{:?}", umessage);
 			},
 			irc::proto::command::Command::Response(ref code, ref argsvec, ref suffixopt) => {
 				match *code {
 					irc::proto::response::Response::RPL_WHOREPLY => {
-						println!("argsvec: {:?}\nsuffixopt: {:?}\n", &argsvec, &suffixopt);
-						//whotx.send()
+						let usuffixopt = suffixopt.clone().unwrap_or("".to_string());
+						let mut space = usuffixopt.find(" ").unwrap_or(0);
+						if space != 0 {
+							space += 1;
+							let nsresponse = NSResponse {
+								username: argsvec[2].to_string(),
+								hostmask: argsvec[3].to_string(),
+								nickname: argsvec[5].to_string(),
+								nsname: usuffixopt[space..].to_string(),
+							};
+							println!("nsresponse: {:?}", &nsresponse);
+							whotx.send(nsresponse);
+						}
 					},
 					_ => {},
 				};
@@ -2612,6 +2629,7 @@ fn is_nick_here(server: &IrcServer, chan: &String, nick: &String) -> bool {
 fn is_nick_registered(server: &IrcServer, nick: &String) {
 	let cmd = format!("WHO {} %na", &nick);
 	do_raw(&server, &cmd.as_str());
+	return;
 }
 
 // Returns the number of ms until next recurrence if this is a recurring timer
