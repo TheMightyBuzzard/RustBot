@@ -19,7 +19,7 @@ use std::{env, thread, str};
 use std::process::exit;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufRead, Write};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Sender, Receiver};
 use std::sync::{mpsc, Mutex, Arc};
 use std::time::Duration;
 use regex::Regex;
@@ -106,6 +106,7 @@ impl BotConfig {
 struct BotState {
 	cookie: String,
 	is_fighting: bool,
+	ns_waiting: bool,
 }
 
 impl BotState {
@@ -113,6 +114,7 @@ impl BotState {
 		BotState {
 			cookie: "".to_string(),
 			is_fighting: false,
+			ns_waiting: false,
 		}
 	}
 }
@@ -389,7 +391,7 @@ fn main() {
 					process_action(&server, &snick, &chan, &said);
 				}
 				else if is_command(&said) {
-					process_command(&server, &subtx, &timertx, &snick, &hostmask, &chan, &said);
+					process_command(&server, &subtx, &timertx, &whorx, &snick, &hostmask, &chan, &said);
 					log_seen(&chan, &snick, &hostmask, &said, 0);
 				}
 				else {
@@ -436,7 +438,7 @@ fn main() {
 								nsname: usuffixopt[space..].to_string(),
 							};
 							println!("nsresponse: {:?}", &nsresponse);
-							whotx.send(nsresponse);
+							let _ = whotx.send(nsresponse);
 						}
 					},
 					_ => {},
@@ -554,7 +556,7 @@ fn cmd_check(checkme: &[u8], against: &str, exact: bool) -> bool {
 	}
 }
 
-fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sender<Timer>, nick: &String, hostmask: &String, chan: &String, said: &String) {
+fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sender<Timer>, whorx: &Receiver<NSResponse>, nick: &String, hostmask: &String, chan: &String, said: &String) {
 	let prefix: String;
 	{
 		match BOTCONFIG.lock() {
@@ -961,6 +963,10 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 		let what = noprefix["raw ".len()..].trim().to_string();
 		do_raw(&server, &what[..]);
 		return;
+	}
+	else if cmd_check(&noprefixbytes, "nscheck ", false) {
+		let who = noprefix["nscheck ".len()..].trim().to_string();
+		let is_registered = is_nick_registered(&server, &whorx, &who);
 	}
 }
 
@@ -2626,10 +2632,33 @@ fn is_nick_here(server: &IrcServer, chan: &String, nick: &String) -> bool {
 	return false;
 }
 
-fn is_nick_registered(server: &IrcServer, nick: &String) {
+fn is_nick_registered(server: &IrcServer, whorx: &Receiver<NSResponse>, nick: &String) -> bool{
 	let cmd = format!("WHO {} %na", &nick);
+	match BOTSTATE.lock() {
+		Err(err) => println!("Error locking BOTSTATE: {:?}", err),
+		Ok(mut botstate) => {
+			while botstate.ns_waiting == true {
+				thread::sleep(Duration::new(1,0));
+			}
+			botstate.ns_waiting = true;
+		},
+	};
 	do_raw(&server, &cmd.as_str());
-	return;
+	loop {
+		match whorx.try_recv() {
+			Err(_) => { },
+			Ok(nsresponse) => {
+				println!("from is_nick_registered: {:?}", &nsresponse);
+				break;
+			},
+		};
+	}
+	thread::sleep(Duration::new(30,0));
+	match BOTSTATE.lock() {
+		Err(err) => println!("Error locking BOTSTATE: {:?}", err),
+		Ok(mut botstate) =>	botstate.ns_waiting = false,
+	};
+	return false;
 }
 
 // Returns the number of ms until next recurrence if this is a recurring timer
