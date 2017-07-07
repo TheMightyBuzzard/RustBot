@@ -375,7 +375,7 @@ fn main() {
 
 	let (whotx, whorx) = mpsc::channel::<NSResponse>();
 
-	// let's have us some async command handling
+	// let's have us some threaded command handling
 	let (cmdtx, cmdrx) = mpsc::channel::<MyCommand>();
 	{
 		let server = server.clone();
@@ -413,6 +413,7 @@ fn main() {
 					process_action(&server, &snick, &chan, &said);
 				}
 				else if is_command(&said) {
+					// process_command moved into its own thread
 					//process_command(&server, &subtx, &timertx, &whorx, &snick, &hostmask, &chan, &said);
 					let command = MyCommand {
 						snick:snick.clone(),
@@ -997,7 +998,12 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 	}
 	else if cmd_check(&noprefixbytes, "nscheck ", false) {
 		let who = noprefix["nscheck ".len()..].trim().to_string();
-		let is_registered = is_nick_registered(&server, &whorx, &who);
+		if is_nick_registered(&server, &whorx, &who) {
+			command_say(&server, chan.to_string(), format!("Yes, {} is registered.", &who));
+		}
+		else {
+			command_say(&server, chan.to_string(), format!("No, {} is not registered.", &who));
+		}
 	}
 }
 
@@ -1195,6 +1201,7 @@ fn command_google(server: &IrcServer, chan: &String, searchstr: String) {
 	let url = format!("https://www.googleapis.com/customsearch/v1?q={}&cx={}&safe=off&key={}", esearchstr, ecx, ekey);
 
 	easy.url(url.as_str()).unwrap();
+	easy.forbid_reuse(true).unwrap();
 	// Closure so that transfer will go poof after being used
 	{
 		let transfer = easy.transfer();
@@ -1246,6 +1253,7 @@ fn command_klingon(server: &IrcServer, chan: &String, english: String) {
 			let eenglish = easy.url_encode(&benglish[..]);
 			let url = format!("http://api.microsofttranslator.com/V2/Http.svc/Translate?text={}&from=en&to={}&contentType=text/plain", &eenglish, &lang);
 			easy.url(url.as_str()).unwrap();
+			easy.forbid_reuse(true).unwrap();
 			easy.http_headers(headerlist).unwrap();
 			{
 				let transfer = easy.transfer();
@@ -2123,6 +2131,7 @@ fn get_weather(wu_key: &String, location: String) -> String {
 	let encloc = fix_location(&location).to_string();
 	let url = format!("http://api.wunderground.com/api/{}/forecast/q/{}.json", wu_key.to_string(), encloc.to_string());
 	easy.url(url.as_str()).unwrap();
+	easy.forbid_reuse(true).unwrap();
 	{
 		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
@@ -2309,6 +2318,11 @@ fn sub_get_page(url: &String) -> String {
 	let mut dst = Vec::new();
 	let mut easy = Easy::new();
 	easy.url(url.as_str()).unwrap();
+	easy.forbid_reuse(true).unwrap();
+	easy.follow_location(true).unwrap();
+	easy.max_redirections(10_u32).unwrap();
+	easy.max_filesize(6291456_u64).unwrap();
+	easy.timeout(Duration::new(5,0)).unwrap();
 	{
 		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
@@ -2387,6 +2401,7 @@ fn sub_get_reskey(cookie: &String) -> String {
 	let mut dst = Vec::new();
 	let mut easy = Easy::new();
 	easy.url(url.as_str()).unwrap();
+	easy.forbid_reuse(true).unwrap();
 	easy.cookie(cookie.as_str()).unwrap();
 	{
 		let transfer = easy.transfer();
@@ -2443,6 +2458,7 @@ fn sub_get_cookie() -> String {
 			let mut dst = Vec::new();
 			let mut easy = Easy::new();
 			easy.url(url.as_str()).unwrap();
+			easy.forbid_reuse(true).unwrap();
 			{
 				let transfer = easy.transfer();
 				headers_only(transfer, &mut dst);
@@ -2527,6 +2543,7 @@ fn get_youtube(go_key: &String, query: &String) -> String {
 	let encquery = easy.url_encode(&querybytes[..]);
 	let url = format!("https://www.googleapis.com/youtube/v3/search/?maxResults=1&q={}&order=relevance&type=video&part=snippet&key={}", encquery, go_key);
 	easy.url(url.as_str()).unwrap();
+	easy.forbid_reuse(true).unwrap();
 	let _ = easy.fail_on_error(true);
 	{
 		let transfer = easy.transfer();
@@ -2578,6 +2595,7 @@ fn send_submission(submission: &Submission) -> bool {
 	}
 
 	easy.url(url.as_str()).unwrap();
+	easy.forbid_reuse(true).unwrap();
 	easy.cookie(submission.cookie.as_str()).unwrap();
 	easy.post_field_size(postdata.len() as u64).unwrap();
 	easy.post_fields_copy(postdata).unwrap();
@@ -2619,6 +2637,7 @@ fn get_bing_token() -> String {
 	let postfields = format!("grant_type=client_credentials&scope=http://api.microsofttranslator.com&client_id=TMBuzzard_Translator&client_secret={}", easy.url_encode(secretbytes));
 	let postbytes = postfields.as_bytes();
 	easy.url(url).unwrap();
+	easy.forbid_reuse(true).unwrap();
 	easy.post_field_size(postbytes.len() as u64).unwrap();
 	easy.post_fields_copy(postbytes).unwrap();
 	easy.post(true).unwrap();
@@ -2675,21 +2694,27 @@ fn is_nick_registered(server: &IrcServer, whorx: &Receiver<NSResponse>, nick: &S
 		},
 	};
 	do_raw(&server, &cmd.as_str());
+	let returnme;
 	loop {
 		match whorx.try_recv() {
 			Err(_) => { },
 			Ok(nsresponse) => {
+				if &nsresponse.nsname[..] == "0" {
+					returnme = false; 
+				}
+				else {
+					returnme = true;
+				}
 				println!("from is_nick_registered: {:?}", &nsresponse);
 				break;
 			},
 		};
 	}
-	thread::sleep(Duration::new(30,0));
 	match BOTSTATE.lock() {
 		Err(err) => println!("Error locking BOTSTATE: {:?}", err),
 		Ok(mut botstate) =>	botstate.ns_waiting = false,
 	};
-	return false;
+	return returnme;
 }
 
 // Returns the number of ms until next recurrence if this is a recurring timer
