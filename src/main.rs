@@ -795,12 +795,15 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "klingon", true) || cmd_check(&noprefixbytes, "klingon ", false) {
+		command_say(&server, chan.clone(), format!("{}klingon temporarily disabled.", &prefix));
+		/*
 		if noprefix.as_str() == "klingon" {
 			command_help(&server, &chan, Some("klingon".to_string()));
 			return;
 		}
 		let english = noprefix["klingon ".len()..].trim().to_string();
 		command_klingon(&server, &chan, english);
+		*/
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "g", true) || cmd_check(&noprefixbytes, "g ", false) {
