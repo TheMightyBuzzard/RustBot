@@ -469,14 +469,14 @@ fn main() {
 								nickname: argsvec[5].to_string(),
 								nsname: usuffixopt[space..].to_string(),
 							};
-							println!("nsresponse: {:?}", &nsresponse);
+							println!("{:?}\nnsresponse: {:?}", &umessage.command, &nsresponse);
 							let _ = whotx.send(nsresponse);
 						}
 					},
 					_ => {},
 				};
 			},
-			_ => {}, //println!("{:?}", umessage),
+			_ => {},
 		};
 	});
 }
