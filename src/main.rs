@@ -380,10 +380,12 @@ fn main() {
 	{
 		let server = server.clone();
 		let _ = thread::spawn(move || {
-			match cmdrx.try_recv() {
-				Err(_) => {},
-				Ok(command) => process_command(&server, &subtx, &timertx, &whorx, &command.snick, &command.hostmask, &command.chan, &command.said),
-			};
+			loop {
+				match cmdrx.try_recv() {
+					Err(_) => {},
+					Ok(command) => process_command(&server, &subtx, &timertx, &whorx, &command.snick, &command.hostmask, &command.chan, &command.said),
+				};
+			}
 		});
 	}
 
