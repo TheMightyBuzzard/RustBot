@@ -1014,6 +1014,14 @@ fn do_raw(server: &IrcServer, data: &str) {
 	return;
 }
 
+fn do_who(server: &IrcServer, who: &str) {
+	let command = irc::proto::command::Command::WHO(Some(format!("%na {}", &who)), Some(true));
+	if !server.send(command).is_ok() {
+		println!("got some sort of error on do_who");
+	}
+	return;
+}
+
 fn command_fitectl(server: &IrcServer, chan: &String, nick: &String, args: String) {
 	let argsbytes = args.as_bytes();
 	if args.len() == 10 && &argsbytes[..] == "scoreboard".as_bytes() {
@@ -2682,7 +2690,7 @@ fn is_nick_here(server: &IrcServer, chan: &String, nick: &String) -> bool {
 }
 
 fn is_nick_registered(server: &IrcServer, whorx: &Receiver<NSResponse>, nick: &String) -> bool{
-	let cmd = format!("WHO {} %na", &nick);
+	//let cmd = format!("WHO {} %na", &nick);
 	match BOTSTATE.lock() {
 		Err(err) => println!("Error locking BOTSTATE: {:?}", err),
 		Ok(mut botstate) => {
@@ -2692,7 +2700,7 @@ fn is_nick_registered(server: &IrcServer, whorx: &Receiver<NSResponse>, nick: &S
 			botstate.ns_waiting = true;
 		},
 	};
-	do_raw(&server, &cmd.as_str());
+	do_who(&server, &nick.as_str());
 	let returnme;
 	loop {
 		match whorx.try_recv() {
