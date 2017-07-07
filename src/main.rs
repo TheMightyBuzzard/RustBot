@@ -421,9 +421,7 @@ fn main() {
 						chan: chan.clone(),
 						said: said.clone(),
 					};
-					println!("created command: {:?}", &command);
-					let foo = cmdtx.send(command);
-					println!("result: {:?}", &foo);
+					let _ = cmdtx.send(command);
 					log_seen(&chan, &snick, &hostmask, &said, 0);
 				}
 				else {
@@ -457,6 +455,7 @@ fn main() {
 				};
 			},
 			irc::proto::command::Command::Response(ref code, ref argsvec, ref suffixopt) => {
+				println!("{:?}", &umessage);
 				match *code {
 					irc::proto::response::Response::RPL_WHOREPLY => {
 						let usuffixopt = suffixopt.clone().unwrap_or("".to_string());
@@ -469,7 +468,7 @@ fn main() {
 								nickname: argsvec[5].to_string(),
 								nsname: usuffixopt[space..].to_string(),
 							};
-							println!("{:?}\nnsresponse: {:?}", &umessage.command, &nsresponse);
+							println!("nsresponse: {:?}", &nsresponse);
 							let _ = whotx.send(nsresponse);
 						}
 					},
