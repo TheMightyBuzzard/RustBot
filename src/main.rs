@@ -454,23 +454,18 @@ fn main() {
 					}	
 				};
 			},
-			irc::proto::command::Command::Response(ref code, ref argsvec, ref suffixopt) => {
-				println!("{:?}", &umessage);
+			irc::proto::command::Command::Response(ref code, ref argsvec, _) => {
 				match *code {
-					irc::proto::response::Response::RPL_WHOREPLY => {
-						let usuffixopt = suffixopt.clone().unwrap_or("".to_string());
-						let mut space = usuffixopt.find(" ").unwrap_or(0);
-						if space != 0 {
-							space += 1;
-							let nsresponse = NSResponse {
-								username: argsvec[2].to_string(),
-								hostmask: argsvec[3].to_string(),
-								nickname: argsvec[5].to_string(),
-								nsname: usuffixopt[space..].to_string(),
-							};
-							println!("nsresponse: {:?}", &nsresponse);
-							let _ = whotx.send(nsresponse);
-						}
+					irc::proto::response::Response::RPL_WHOSPCRPL => {
+					println!("{:?}", &umessage);
+						let nsresponse = NSResponse {
+							username: "".to_string(),
+							hostmask: "".to_string(),
+							nickname: argsvec[1].to_string(),
+							nsname: argsvec[2].to_string(),
+						};
+						println!("nsresponse: {:?}", &nsresponse);
+						let _ = whotx.send(nsresponse);
 					},
 					_ => {},
 				};
@@ -1015,7 +1010,7 @@ fn do_raw(server: &IrcServer, data: &str) {
 }
 
 fn do_who(server: &IrcServer, who: &str) {
-	let command = irc::proto::command::Command::Raw(format!("WHO {}", &who), vec!["%na".to_string()], None);
+	let command = irc::proto::command::Command::Raw(format!("WHO {} %na", &who), vec!["%na".to_string()], Some(format!("%na")));
 	if !server.send(command).is_ok() {
 		println!("got some sort of error on do_who");
 	}
