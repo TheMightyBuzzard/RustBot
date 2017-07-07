@@ -1015,7 +1015,7 @@ fn do_raw(server: &IrcServer, data: &str) {
 }
 
 fn do_who(server: &IrcServer, who: &str) {
-	let command = irc::proto::command::Command::WHO(Some(format!("{} %a", &who)), Some(true));
+	let command = irc::proto::command::Command::Raw(who.to_string(), vec!["%na".to_string()], None);
 	if !server.send(command).is_ok() {
 		println!("got some sort of error on do_who");
 	}
