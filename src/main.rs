@@ -25,14 +25,13 @@ use std::sync::mpsc::{Sender, Receiver};
 use std::sync::{mpsc, Mutex, Arc};
 use std::time::Duration;
 use regex::Regex;
-use curl::easy::{Easy, List};
+use curl::easy::{Easy};
 use irc::client::prelude::*;
 use serde_json::{Value};
 use rustc_serialize::json::Json;
 use rusqlite::Connection;
 use rand::Rng;
 use geocoding::{Opencage, Forward, Point};
-use geocoding::opencage::OpencageResponse;
 use chrono::{TimeZone, FixedOffset, Local};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -2221,7 +2220,7 @@ fn get_weather(location: String) -> String {
 	let oc = Opencage::new(ockey);
 	let ocres: Vec<Point<f32>> = oc.forward(&location.as_str()).unwrap();
 	let lat: f32 = ocres[0].y();
-	let lng: f32 = 64.1f32;
+	let lng: f32 = ocres[1].x();
 	//let lng: f32 = ocres.results[0].geometry.get("lng").unwrap();
 
 	// now get the weather for lat/lng
