@@ -1,4 +1,6 @@
 #![allow(non_snake_case)]
+#![feature(alloc_system)]
+extern crate alloc_system;
 extern crate curl;
 extern crate irc;
 extern crate rusqlite;
@@ -226,6 +228,7 @@ const VERSION: &str = "0.2.3";
 const SOURCE: &str = "https://github.com/TheMightyBuzzard/RustBot";
 const DEBUG: bool = false;
 const ARMOR_CLASS: u8 = 10;
+const MAX_DL_SIZE: f64 = 1048576f64;
 
 lazy_static! {
 	static ref BOTCONFIG: Arc<Mutex<BotConfig>> = Arc::new(Mutex::new(BotConfig::new()));
@@ -426,6 +429,8 @@ fn main() {
 					Err(_) => {},
 					Ok(command) => process_command(&server, &subtx, &timertx, &whorx, &command.snick, &command.hostmask, &command.chan, &command.said),
 				};
+				let tenthSecond = Duration::from_millis(100);
+				thread::sleep(tenthSecond);
 			}
 		});
 	}
@@ -435,6 +440,9 @@ fn main() {
 		let umessage = message.clone();
 		let nick = umessage.source_nickname();
 		let snick: String;
+		if DEBUG {
+			println!("{:?}", umessage);
+		}
 		match umessage.command {
 			irc::proto::command::Command::PRIVMSG(ref chan, ref untrimmed) => {
 				let said = untrimmed.trim_end().to_string();
@@ -980,11 +988,11 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 		load_descres();
 		return;
 	}
-	else if cmd_check(&noprefixbytes, "fakeweather", true) || cmd_check(&noprefixbytes, "fakeweather ", false) {
+	else if cmd_check(&noprefixbytes, "sammichadd", true) || cmd_check(&noprefixbytes, "sammichadd ", false) {
 		if is_abuser(&server, &chan, &maskonly) {
 			return;
 		}
-		if noprefix.as_str() == "sammich" {
+		if noprefix.as_str() == "sammichadd" {
 			command_help(&server, &chan, Some("sammichadd".to_string()));
 			return;
 		}
@@ -1203,20 +1211,33 @@ fn command_sammich_alt(server: &IrcServer, chan: &String, target: &String) {
 }
 
 fn body_only<'a, 'b>(mut transfer: curl::easy::Transfer<'b, 'a>, dst: &'a mut Vec<u8>) {
-	let _ = transfer.write_function(move |data: &[u8]| {
+	transfer.write_function(move |data: &[u8]| {
 		dst.extend_from_slice(data);
 		Ok(data.len())
-	});
-	transfer.perform().unwrap();
+	}).unwrap();
+	transfer.progress_function(check_max_transfer_size).unwrap();
+	let _ = transfer.perform();
 }
 
 fn headers_only<'a, 'b>(mut transfer: curl::easy::Transfer<'b, 'a>, dst: &'a mut Vec<u8>) {
+	transfer.progress_function(check_max_transfer_size).unwrap();
 	transfer.write_function(nullme).unwrap();
 	let _ = transfer.header_function(move |data: &[u8]| {
 		dst.extend_from_slice(data);
 		true
 	});
-	transfer.perform().unwrap();
+	let _ = transfer.perform();
+}
+
+fn check_max_transfer_size(expected: f64, current: f64, _: f64, _: f64) -> bool {
+	let mut wegood: bool = true;
+	if expected > MAX_DL_SIZE {
+		wegood = false;
+	}
+	if current > MAX_DL_SIZE {
+		wegood = false;
+	}
+	wegood
 }
 
 fn nullme(data: &[u8]) -> Result<usize,curl::easy::WriteError> {
@@ -1250,6 +1271,7 @@ fn command_google(server: &IrcServer, chan: &String, searchstr: String) {
 
 	easy.url(url.as_str()).unwrap();
 	easy.forbid_reuse(true).unwrap();
+	easy.progress(true).unwrap();
 	// Closure so that transfer will go poof after being used
 	{
 		let transfer = easy.transfer();
@@ -1282,6 +1304,7 @@ fn command_google(server: &IrcServer, chan: &String, searchstr: String) {
 }
 
 fn command_klingon(server: &IrcServer, chan: &String, english: String) {
+	/*
 	let token = get_bing_token();
 	if token == "".to_string() {
 		let _ = server.send_privmsg(&chan, "Could not get bing translate token, check the logs");
@@ -1327,6 +1350,7 @@ fn command_klingon(server: &IrcServer, chan: &String, english: String) {
 	let tlh = capone.unwrap().at(1).unwrap_or("wtf?!");
 	let qaak = captwo.unwrap().at(1).unwrap_or("wtf?!");
 	let _ = server.send_privmsg(&chan, format!("{} ({})	", tlh, qaak).as_str());
+	*/
 	return;
 }
 
@@ -1407,6 +1431,10 @@ fn command_youtube(server: &IrcServer, chan: &String, query: String) {
 
 fn command_submit(server: &IrcServer, chan: &String, subtx: &Sender<Submission>, suburl: String, summary: String, submitter: &String) {
 	let page: String = sub_get_page(&suburl);
+	if &page[0..3] == "111" {
+		let _ = server.send_privmsg(&chan, &format!("{}", &page[3..]));
+		return;
+	}
 	let title: String = sub_get_title(&page);
 	if title == "".to_string() {
 		let _ = server.send_privmsg(&chan, "Unable to find a title for that page");
@@ -2383,16 +2411,31 @@ fn sub_get_page(url: &String) -> String {
 	easy.max_redirections(10_u32).unwrap();
 	easy.max_filesize(6291456_u64).unwrap();
 	easy.timeout(Duration::new(5,0)).unwrap();
+	easy.progress(true).unwrap();
 	{
 		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
 	}
-	if easy.response_code().unwrap_or(999) != 200 {
-		return format!("got http response code {}", easy.response_code().unwrap_or(999));
+	if dst.len() < 10 {
+		return format!("111page too large");
 	}
-
-	let page = str::from_utf8(&dst[..]).unwrap_or("");
-	return page.to_string().trim().to_string();
+	if easy.response_code().unwrap_or(999) != 200 {
+		return format!("111got http response code {}", easy.response_code().unwrap_or(999));
+	}
+	let result = str::from_utf8(&dst[..]);
+	let page;
+	let pagestring;
+	match result {
+		Ok(res) => {
+			page = res;
+			pagestring = page.to_string().trim().to_string();
+		},
+		Err(e) => {
+			println!("{:#?}", e);
+			pagestring = format!("{}", String::from_utf8_lossy(&dst[..]));
+		}
+	}
+	return pagestring;
 }
 
 fn sub_get_title(page: &String) -> String {
@@ -2463,6 +2506,7 @@ fn sub_get_reskey(cookie: &String) -> String {
 	easy.url(url.as_str()).unwrap();
 	easy.forbid_reuse(true).unwrap();
 	easy.cookie(cookie.as_str()).unwrap();
+	easy.progress(true).unwrap();
 	{
 		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
@@ -2604,7 +2648,8 @@ fn get_youtube(go_key: &String, query: &String) -> String {
 	let url = format!("https://www.googleapis.com/youtube/v3/search/?maxResults=1&q={}&order=relevance&type=video&part=snippet&key={}", encquery, go_key);
 	easy.url(url.as_str()).unwrap();
 	easy.forbid_reuse(true).unwrap();
-	let _ = easy.fail_on_error(true);
+	easy.progress(true).unwrap();
+	easy.fail_on_error(true).unwrap();
 	{
 		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
@@ -2660,7 +2705,8 @@ fn send_submission(submission: &Submission) -> bool {
 	easy.post_field_size(postdata.len() as u64).unwrap();
 	easy.post_fields_copy(postdata).unwrap();
 	easy.post(true).unwrap();
-	let _ = easy.fail_on_error(true);
+	easy.fail_on_error(true).unwrap();
+	easy.progress(true).unwrap();
 	{
 		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
@@ -2701,6 +2747,7 @@ fn get_bing_token() -> String {
 	easy.post_field_size(postbytes.len() as u64).unwrap();
 	easy.post_fields_copy(postbytes).unwrap();
 	easy.post(true).unwrap();
+	easy.progress(true).unwrap();
 	{
 		let transfer = easy.transfer();
 		body_only(transfer, &mut dst);
@@ -3178,6 +3225,9 @@ fn save_character(character: &Character) {
 	let time: i64 = time::now_utc().to_timespec().sec;
 	let level = character.level as i64;
 	let hp = character.hp as i64;
+	if &character.nick.len() > 3 && &character.nick.as_str()[..4] == "NPC_" {
+		return;
+	}
 	match CONN.lock() {
 		Err(err) => {
 			println!("Could not lock CONN: {:#?}", err);
@@ -3231,6 +3281,9 @@ fn character_exists(nick: &String) -> bool {
 
 fn create_character(nick: &String) {
 	let time: i64 = time::now_utc().to_timespec().sec;
+	if &nick.len() > 3 && &nick[..4] == "NPC_" {
+		return;
+	}
 	match CONN.lock() {
 		Err(err) => {
 			println!("Could not lock CONN: {:#?}", err);
@@ -3253,6 +3306,18 @@ fn is_alive(character: &Character) -> bool {
 }
 
 fn get_character(nick: &String) -> Character {
+	// return a fake character if &nick[..4] == "NPC_"
+	if &nick.len() > 3 && &nick[..4] == "NPC_" {
+		return Character {
+			nick: nick.clone(),
+			level: 1,
+			hp: 11,
+			weapon: "dangly bits".to_string(),
+			armor: "morning wood".to_string(),
+			ts: 0,
+			initiative: 0,
+		};
+	}
 	match CONN.lock() {
 		Err(err) => {
 			println!("Could not lock CONN: {:#?}", err);
