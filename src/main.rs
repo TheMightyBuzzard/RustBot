@@ -2190,7 +2190,7 @@ fn get_weather(location: String) -> String {
 	}
 
 	// gotta get the lat/long for location for the forecast crate
-	let oc = Opencage::new(ockey.clone());
+	let oc = Opencage::new(ockey);
 	let ocres = oc.forward_full(&location.as_str(), &None).unwrap();
 	let lat: f32 = *ocres.results[0].geometry.get("lat").unwrap();
 	let lng: f32 = *ocres.results[0].geometry.get("lng").unwrap();
