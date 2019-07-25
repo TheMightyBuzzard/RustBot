@@ -8,6 +8,8 @@ extern crate rustc_serialize;
 extern crate regex;
 extern crate time;
 extern crate rand;
+extern crate geocoding;
+extern crate chrono;
 
 #[macro_use]
 extern crate serde_derive;
@@ -25,10 +27,12 @@ use std::time::Duration;
 use regex::Regex;
 use curl::easy::{Easy, List};
 use irc::client::prelude::*;
-use serde_json::Value;
+use serde_json::{Value};
 use rustc_serialize::json::Json;
 use rusqlite::Connection;
 use rand::Rng;
+use geocoding::{Opencage};
+use chrono::{TimeZone, FixedOffset, Local};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 struct BotConfig {
@@ -45,6 +49,8 @@ struct BotConfig {
 	wu_key: String,
 	go_key: String,
 	bi_key: String,
+	oc_key: String,
+	dw_key: String,
 	cse_id: String,
 }
 
@@ -64,6 +70,8 @@ impl BotConfig {
 			wu_key: "".to_string(),
 			go_key: "".to_string(),
 			bi_key: "".to_string(),
+			oc_key: "".to_string(),
+			dw_key: "".to_string(),
 			cse_id: "".to_string(),
 		}
 	}
@@ -81,6 +89,8 @@ impl BotConfig {
 		self.wu_key = new.wu_key;
 		self.go_key = new.go_key;
 		self.bi_key = new.bi_key;
+		self.oc_key = new.oc_key;
+		self.dw_key = new.dw_key;
 		self.cse_id = new.cse_id;
 	}
 	// TODO: write a saving command
@@ -92,7 +102,7 @@ impl BotConfig {
 				let _ = serde_json::to_writer_pretty(file, &self);
 			},
 			Err(err) => {
-				println!("error creating BotConfig file: {:?}", err);
+				println!("error creating BotConfig file: {:#?}", err);
 			},
 		};
 	}
@@ -181,7 +191,38 @@ struct MyCommand {
 	said: String,
 }
 
-const VERSION: &str = "0.2.2";
+#[derive(Serialize, Deserialize, Debug)]
+struct DayOfWeather {
+	time: i64,
+	summary: String,
+	precipProbability: f32,
+	precipType: String,
+	temperatureHigh: f32,
+	temperatureLow: f32,
+	humidity: f32,
+	pressure: f32,
+	windSpeed: f32,
+	windGust: f32,
+	cloudCover: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct WeatherDaily {
+	summary: String,
+	icon: String,
+	data: Vec<DayOfWeather>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct WeatherJSON {
+	latitude: f32,
+	longitude: f32,
+	timezone: String,
+	daily: WeatherDaily,
+	offset: i32,
+}
+
+const VERSION: &str = "0.2.3";
 const SOURCE: &str = "https://github.com/TheMightyBuzzard/RustBot";
 const DEBUG: bool = false;
 const ARMOR_CLASS: u8 = 10;
@@ -210,7 +251,7 @@ fn main() {
 		let botconfig: BotConfig = get_bot_config(&thisbot);
 		match BOTCONFIG.lock() {
 			Err(err) => {
-				println!("Error locking BOTCONFIG: {:?}", err);
+				println!("Error locking BOTCONFIG: {:#?}", err);
 				exit(1);
 			},
 			Ok(mut cfg) => cfg.load(botconfig),
@@ -222,7 +263,7 @@ fn main() {
 	{
 		match BOTCONFIG.lock() {
 			Err(err) => {
-				println!("Error locking BOTCONFIG: {:?}", err);
+				println!("Error locking BOTCONFIG: {:#?}", err);
 				exit(1);
 			},
 			Ok(cfg) => botconfig.load(cfg.clone()),
@@ -279,7 +320,7 @@ fn main() {
 			loop {
 				for submission in subrx.recv() {
 					if DEBUG {
-						println!("{:?}", submission);
+						println!("{:#?}", submission);
 					}
 					thread::sleep(Duration::new(25,0));
 					let chan = submission.chan.clone();
@@ -321,7 +362,7 @@ fn main() {
 					Err(_) => { },
 					Ok(timer) => {
 						if DEBUG {
-							println!("{:?}", timer);
+							println!("{:#?}", timer);
 						}
 						qTimers.push(timer);
 					}
@@ -396,7 +437,7 @@ fn main() {
 		let snick: String;
 		match umessage.command {
 			irc::proto::command::Command::PRIVMSG(ref chan, ref untrimmed) => {
-				let said = untrimmed.trim_right().to_string();
+				let said = untrimmed.trim_end().to_string();
 				let hostmask = umessage.prefix.clone().unwrap().to_string();
 				snick = nick.unwrap().to_string();
 				if check_messages(&snick) {
@@ -434,14 +475,14 @@ fn main() {
 					Err(_) => { },
 					Ok(timer) => {
 						if DEBUG {
-							println!("{:?}", timer);
+							println!("{:#?}", timer);
 						}
 						match timer.action {
 							TimerTypes::Feedback {ref command} => {
 								match &command[..] {
 									"fiteoff" => {
 										match BOTSTATE.lock() {
-											Err(err) => println!("Error locking BOTSTATE: {:?}", err),
+											Err(err) => println!("Error locking BOTSTATE: {:#?}", err),
 											Ok(mut botstate) => botstate.is_fighting = false,
 										};
 									},
@@ -457,14 +498,13 @@ fn main() {
 			irc::proto::command::Command::Response(ref code, ref argsvec, _) => {
 				match *code {
 					irc::proto::response::Response::RPL_WHOSPCRPL => {
-					println!("{:?}", &umessage);
 						let nsresponse = NSResponse {
 							username: "".to_string(),
 							hostmask: "".to_string(),
 							nickname: argsvec[1].to_string(),
 							nsname: argsvec[2].to_string(),
 						};
-						println!("nsresponse: {:?}", &nsresponse);
+						println!("nsresponse: {:#?}", &nsresponse);
 						let _ = whotx.send(nsresponse);
 					},
 					_ => {},
@@ -485,19 +525,19 @@ fn get_bot_config(botnick: &String) -> BotConfig {
 					match serde_json::from_value(allconfigs[&botnick[..]].clone()) {
 						Ok(config) => return config,
 						Err(err) => {
-							println!("{:?}", err);
+							println!("{:#?}", err);
 							exit(1);
 						},
 					};
 				},
 				Err(err) => {
-					println!("Could not read from {}: {:?}", &bot_config, err);
+					println!("Could not read from {}: {:#?}", &bot_config, err);
 					exit(1);
 				},
 			};
 		},
 		Err(err) => {
-			println!("Could not open {}: {:?}", &bot_config, err);
+			println!("Could not open {}: {:#?}", &bot_config, err);
 			exit(1);
 		},
 	};
@@ -521,7 +561,7 @@ fn is_action(said: &String) -> bool {
 fn is_command(said: &String) -> bool {
 	let mut prefix = "💩💩💩".to_string();
 	match BOTCONFIG.lock() {
-		Err(err) => println!("Could not lock BOTCONFIG: {:?}", err),
+		Err(err) => println!("Could not lock BOTCONFIG: {:#?}", err),
 		Ok(botconfig) => prefix = botconfig.prefix.clone(),
 	};
 	if said.len() < prefix.len() {
@@ -539,7 +579,7 @@ fn is_command(said: &String) -> bool {
 
 fn log_seen(chan: &String, snick: &String, hostmask: &String, said: &String, action: i32) {
 	match CONN.lock() {
-		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Err(err) => println!("Could not lock CONN: {:#?}", err),
 		Ok(conn) => {
 			let time: i64 = time::now_utc().to_timespec().sec;
 			conn.execute("REPLACE INTO seen VALUES($1, $2, $3, $4, $5, $6)", &[snick, hostmask, chan, said, &time, &action]).unwrap();
@@ -587,7 +627,7 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 	{
 		match BOTCONFIG.lock() {
 			Err(err) => {
-				println!("Could not lock BOTCONFIG: {:?}", err);
+				println!("Could not lock BOTCONFIG: {:#?}", err);
 				return;
 			},
 			Ok(botconfig) => {
@@ -835,6 +875,7 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 		command_tell(&server, &chan, &nick, nocommand);
 		return;
 	}
+	/*
 	else if cmd_check(&noprefixbytes, "klingon", true) || cmd_check(&noprefixbytes, "klingon ", false) {
 		if noprefix.as_str() == "klingon" {
 			command_help(&server, &chan, Some("klingon".to_string()));
@@ -843,7 +884,7 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 		let english = noprefix["klingon ".len()..].trim().to_string();
 		command_klingon(&server, &chan, english);
 		return;
-	}
+	}*/
 	else if cmd_check(&noprefixbytes, "g", true) || cmd_check(&noprefixbytes, "g ", false) {
 		if noprefix.as_str() == "g" {
 			command_help(&server, &chan, Some("g".to_string()));
@@ -856,7 +897,7 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 	else if cmd_check(&noprefixbytes, "fite", true) || cmd_check(&noprefixbytes, "fite ", false) {
 		match BOTSTATE.lock() {
 			Err(err) => {
-				println!("Could not lock BOTSTATE: {:?}", err);
+				println!("Could not lock BOTSTATE: {:#?}", err);
 				return;
 			},
 			Ok(mut botstate) => {
@@ -873,6 +914,20 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 					let _ = server.send_privmsg(&chan, "#fite restricted to the channel #fite");
 					return;
 				}
+				// if the person asking isn't registered, register them
+				if !is_nick_fiter(&nick) {
+					if !is_nick_registered(&server, &whorx, &nick) {
+						match register_fiter(&nick) {
+							Err(err) => {
+								println!("Could not register {} for fite: {:#?}", &nick, &err);
+								return;
+							},
+							Ok(_) => {},
+						};
+					}
+				}
+				
+				// start the fite
 				botstate.is_fighting = true;
 				let target = noprefix["fite ".len()..].trim().to_string();
 				let stop = command_fite(&server, &timertx, &chan, &nick, target);
@@ -895,7 +950,7 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 		{
 			match BOTSTATE.lock() {
 				Err(err) => {
-					println!("Could not lock BOTSTATE: {:?}", err);
+					println!("Could not lock BOTSTATE: {:#?}", err);
 					return;
 				},
 				Ok(botstate) => is_fighting = botstate.is_fighting,
@@ -990,15 +1045,6 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 		do_raw(&server, &what[..]);
 		return;
 	}
-	else if cmd_check(&noprefixbytes, "nscheck ", false) {
-		let who = noprefix["nscheck ".len()..].trim().to_string();
-		if is_nick_registered(&server, &whorx, &who) {
-			command_say(&server, chan.to_string(), format!("Yes, {} is registered.", &who));
-		}
-		else {
-			command_say(&server, chan.to_string(), format!("No, {} is not registered.", &who));
-		}
-	}
 }
 
 fn do_raw(server: &IrcServer, data: &str) {
@@ -1038,7 +1084,7 @@ fn command_fitectl(server: &IrcServer, chan: &String, nick: &String, args: Strin
 fn command_goodfairy(server: &IrcServer, chan: &String) {
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -1090,7 +1136,7 @@ fn command_sammichadd(server: &IrcServer, chan: &String, sammich: String) {
 	}
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -1120,7 +1166,7 @@ fn command_sammich(server: &IrcServer, chan: &String, nick: &String) {
 	}
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -1184,7 +1230,7 @@ fn command_google(server: &IrcServer, chan: &String, searchstr: String) {
 	let bcx;
 	match BOTCONFIG.lock() {
 		Err(err) => {
-			println!("Could not lock BOTCONFIG: {:?}", err);
+			println!("Could not lock BOTCONFIG: {:#?}", err);
 			return;
 		},
 		Ok(botconfig) => {
@@ -1350,7 +1396,7 @@ fn command_roll(server: &IrcServer, chan: &String, args: String) {
 
 fn command_youtube(server: &IrcServer, chan: &String, query: String) {
 	match BOTCONFIG.lock() {
-		Err(err) => println!("Could not lock BOTCONFIG: {:?}", err),
+		Err(err) => println!("Could not lock BOTCONFIG: {:#?}", err),
 		Ok(botconfig) => {
 			let link = get_youtube(&botconfig.go_key, &query);
 			let _ = server.send_privmsg(&chan, format!("https://www.youtube.com/watch?v={}", link).as_str());
@@ -1378,14 +1424,14 @@ fn command_submit(server: &IrcServer, chan: &String, subtx: &Sender<Submission>,
 	{
 		match BOTSTATE.lock() {
 			Err(err) => {
-				println!("Could not lock BOTSTATE: {:?}", err);
+				println!("Could not lock BOTSTATE: {:#?}", err);
 				return;
 			},
 			Ok(botstate) => cookie = botstate.cookie.clone(),
 		};
 		match BOTCONFIG.lock() {
 			Err(err) => {
-				println!("Could not lock BOTCONFIG: {:?}", err);
+				println!("Could not lock BOTCONFIG: {:#?}", err);
 				return;
 			},
 			Ok(botconfig) => botnick = botconfig.nick.clone(),
@@ -1417,7 +1463,7 @@ fn command_submit(server: &IrcServer, chan: &String, subtx: &Sender<Submission>,
 	let foo = subtx.send(submission);
 	match foo {
 		Ok(_) => {},
-		Err(err) => println!("{:?}", err),
+		Err(err) => println!("{:#?}", err),
 	};
 	return;
 }
@@ -1444,7 +1490,7 @@ fn command_join(server: &IrcServer, joinchan: String) {
 fn command_part(server: &IrcServer, chan: &String, partchan: String) {
 	match BOTCONFIG.lock() {
 		Err(err) => {
-			println!("Could not lock BOTCONFIG: {:?}", err);
+			println!("Could not lock BOTCONFIG: {:#?}", err);
 			return;
 		},
 		Ok(botconfig) => {
@@ -1489,7 +1535,7 @@ fn command_seen(server: &IrcServer, chan: &String, who: String) {
 
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -1539,7 +1585,7 @@ fn command_smake(server: &IrcServer, chan: &String, who: String) {
 
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -1571,7 +1617,7 @@ fn command_smakeadd(server: &IrcServer, chan: &String, what: String) {
 	
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -1594,7 +1640,7 @@ fn command_smakeadd(server: &IrcServer, chan: &String, what: String) {
 fn command_fake_weather_add(server: &IrcServer, chan: &String, what: String) {
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -1619,7 +1665,7 @@ fn command_fake_weather_add(server: &IrcServer, chan: &String, what: String) {
 					};
 					match WUCACHE.lock() {
 						Err(err) => {
-							println!("Could not lock WUCACHE: {:?}", err);
+							println!("Could not lock WUCACHE: {:#?}", err);
 							return;
 						},
 						Ok(mut wucache) => {
@@ -1658,7 +1704,7 @@ fn command_weather_alias(server: &IrcServer, chan: &String, walias: String) {
 	}
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -1698,7 +1744,7 @@ fn command_weatheradd(server: &IrcServer, nick: &String, chan: &String, checkloc
 
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -1725,7 +1771,7 @@ fn command_weather(server: &IrcServer, nick: &String, chan: &String, checklocati
 	// unalias unaliasedlocation if it is aliased
 	match CONN.lock() {
 	Err(err) => {
-		println!("Could not lock CONN: {:?}", err);
+		println!("Could not lock CONN: {:#?}", err);
 		return;
 	},
 	Ok(conn) => {
@@ -1769,17 +1815,7 @@ fn command_weather(server: &IrcServer, nick: &String, chan: &String, checklocati
 		
 			match location {
 				Some(var) => {
-					let wukey;
-					match BOTCONFIG.lock() {
-						Err(err) => {
-							println!("Could not lock BOTCONFIG: {:?}", err);
-							return;
-						},
-						Ok(botconfig) => {
-							wukey = botconfig.wu_key.clone();
-						},
-					};
-					weather = get_weather(&wukey, var.trim().to_string());
+					weather = get_weather(var.trim().to_string());
 				},
 				None => weather = format!("No location found for {}", nick).to_string(),
 			};
@@ -1831,7 +1867,7 @@ fn command_bot(server: &IrcServer, chan: &String, bot: String) {
 fn command_help(server: &IrcServer, chan: &String, command: Option<String>) {
 	match BOTCONFIG.lock() {
 		Err(err) => {
-			println!("Could not lock BOTCONFIG: {:?}", err);
+			println!("Could not lock BOTCONFIG: {:#?}", err);
 		},
 		Ok(botconfig) => {
 			let helptext: String = get_help(&botconfig.prefix, command);
@@ -1844,7 +1880,7 @@ fn command_help(server: &IrcServer, chan: &String, command: Option<String>) {
 fn sql_table_check(table: String) -> bool {
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return false;
 		},
 		Ok(conn) => {
@@ -1863,7 +1899,7 @@ fn sql_table_check(table: String) -> bool {
 fn sql_table_create(table: String) -> bool {
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return false;
 		},
 		Ok(conn) => {
@@ -1886,7 +1922,7 @@ fn prime_weather_cache() {
 		return;
 	}
 	match CONN.lock() {
-		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Err(err) => println!("Could not lock CONN: {:#?}", err),
 		Ok(conn) => {
 			let mut statement = format!("SELECT count(*) FROM {}", &table);
 			let result: i32 = conn.query_row(statement.as_str(), &[], |row| {
@@ -1910,7 +1946,7 @@ fn prime_weather_cache() {
 				let thisentry = entry.unwrap();
 				match WUCACHE.lock() {
 					Err(err) => {
-						println!("Could not lock WUCACHE: {:?}", err);
+						println!("Could not lock WUCACHE: {:#?}", err);
 						return;
 					},
 					Ok(mut wucache) => wucache.push(thisentry),
@@ -1926,7 +1962,7 @@ fn check_messages(nick: &String) -> bool {
 		return false;
 	}
 	match CONN.lock() {
-		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Err(err) => println!("Could not lock CONN: {:#?}", err),
 		Ok(conn) => {
 			let statement: String = format!("SELECT count(*) FROM {} WHERE recipient = $1", &table);
 			let result: i32 = conn.query_row(statement.as_str(), &[&nick.as_str()], |row| {
@@ -1942,7 +1978,7 @@ fn check_messages(nick: &String) -> bool {
 
 fn deliver_messages(server: &IrcServer, nick: &String) {
 	match CONN.lock() {
-		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Err(err) => println!("Could not lock CONN: {:#?}", err),
 		Ok(conn) => {
 			struct Row {
 				sender: String,
@@ -1985,7 +2021,7 @@ fn save_msg(fromwho: &String, tellwho: String, tellwhat: String) -> bool {
 		}
 	}
 	match CONN.lock() {
-		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Err(err) => println!("Could not lock CONN: {:#?}", err),
 		Ok(conn) => {
 			let time: i64 = time::now_utc().to_timespec().sec;
 			let statement: String = format!("INSERT INTO {} VALUES($1, $2, $3, $4)", &table).to_string();
@@ -2068,7 +2104,7 @@ fn cache_push(location: &String, weather: &String) {
 	cache_prune();
 	match WUCACHE.lock() {
 		Err(err) => {
-			println!("Could not lock WUCACHE: {:?}", err);
+			println!("Could not lock WUCACHE: {:#?}", err);
 			return;
 		},
 		Ok(mut cache) => {
@@ -2087,7 +2123,7 @@ fn cache_get(location: &String) -> Option<String> {
 	cache_prune();
 	match WUCACHE.lock() {
 		Err(err) => {
-			println!("Could not lock WUCACHE: {:?}", err);
+			println!("Could not lock WUCACHE: {:#?}", err);
 			return None;
 		},
 		Ok(cache) => {
@@ -2104,7 +2140,7 @@ fn cache_get(location: &String) -> Option<String> {
 fn cache_prune() {
 	match WUCACHE.lock() {
 		Err(err) => {
-			println!("Could not lock WUCACHE: {:?}", err);
+			println!("Could not lock WUCACHE: {:#?}", err);
 			return;
 		},
 		Ok(mut cache) => {
@@ -2122,41 +2158,63 @@ fn cache_prune() {
 	};
 }
 
-fn get_weather(wu_key: &String, location: String) -> String {
+fn get_weather(location: String) -> String {
+	// short out if we've done this loc recently
 	let cached = cache_get(&location);
 	if cached.is_some() {
 		return cached.unwrap();
 	}
 
-	let mut dst = Vec::new();
-	let mut easy = Easy::new();
-	let encloc = fix_location(&location).to_string();
-	let url = format!("http://api.wunderground.com/api/{}/forecast/q/{}.json", wu_key.to_string(), encloc.to_string());
-	easy.url(url.as_str()).unwrap();
-	easy.forbid_reuse(true).unwrap();
-	{
-		let transfer = easy.transfer();
-		body_only(transfer, &mut dst);
+	// Get config stuffs
+	let ockey: String;
+	match BOTCONFIG.lock() {
+		Err(err) => {
+			println!("Could not lock BOTCONFIG: {:#?}", err);
+			ockey = "".to_string();
+			return format!("Could not lock BOTCONFIG");
+		},
+		Ok(botconfig) => {
+			ockey = botconfig.oc_key.clone();
+		}
 	}
-	if easy.response_code().unwrap_or(999) != 200 {
-		return format!("got http response code {}", easy.response_code().unwrap_or(999)).to_string();
+	let dwkey: String;
+	match BOTCONFIG.lock() {
+		Err(err) => {
+			println!("Could not lock BOTCONFIG: {:#?}", err);
+			dwkey = "".to_string();
+			return format!("Could not lock BOTCONFIG");
+		},
+		Ok(botconfig) => {
+			dwkey = botconfig.dw_key.clone();
+		}
 	}
 
-	let json = str::from_utf8(&dst[..]).unwrap_or("");
-	let jsonthing = Json::from_str(json).unwrap_or(Json::from_str("{}").unwrap());
-	let forecast;
-	let path = jsonthing.find_path(&["forecast", "txt_forecast", "forecastday" ]);
-	if path.is_some() {
-		forecast = path.unwrap();
-	}
-	else {
-		return "Unable to find weather for that location".to_string();
-	}
-	let today = forecast[0].find_path(&["fcttext"]).unwrap().as_string().unwrap();
-	let tomorrow = forecast[2].find_path(&["fcttext"]).unwrap().as_string().unwrap();
-	let forecast = format!("Today: {} Tomorrow: {}", today, tomorrow);
-	cache_push(&location, &forecast);
-	return forecast;
+	// gotta get the lat/long for location for the forecast crate
+	let oc = Opencage::new(ockey.clone());
+	let ocres = oc.forward_full(&location.as_str(), &None).unwrap();
+	let lat: f32 = *ocres.results[0].geometry.get("lat").unwrap();
+	let lng: f32 = *ocres.results[0].geometry.get("lng").unwrap();
+
+	// now get the weather for lat/lng
+	let mut badblocks = vec![forecast::ExcludeBlock::Currently, forecast::ExcludeBlock::Minutely, forecast::ExcludeBlock::Hourly];
+	let reqw_client = reqwest::Client::new();
+	let api_client = forecast::ApiClient::new(&reqw_client);
+	let forecast_request = forecast::ForecastRequestBuilder::new(dwkey.as_str(), lat.into(), lng.into()).exclude_blocks(&mut badblocks).lang(forecast::Lang::English).units(forecast::Units::Imperial).build();
+	let fc_r: WeatherJSON = api_client.get_forecast(forecast_request).unwrap().json().unwrap();
+	let today = &fc_r.daily.data[0];
+	let today_d = Local.timestamp(today.time, 0).with_timezone(&FixedOffset::east_opt(fc_r.offset * 3600).unwrap()).format("%a %b %d");
+	let tomorrow = &fc_r.daily.data[1];
+	let tomorrow_d = Local.timestamp(tomorrow.time, 0).with_timezone(&FixedOffset::east_opt(fc_r.offset * 3600).unwrap()).format("%a %b %d");
+	let dayafter = &fc_r.daily.data[2];
+	let dayafter_d = Local.timestamp(dayafter.time, 0).with_timezone(&FixedOffset::east_opt(fc_r.offset * 3600).unwrap()).format("%a %b %d");
+	
+	// pretty it up for return and cache the results
+	let forecast_text = format!("{} {} {}",
+		format!("{}: {} High {}F. Low {}F. Humidity {}%. Percipitation chance {}%. Winds to {}mph.", today_d, today.summary, today.temperatureHigh, today.temperatureLow, today.humidity, today.precipProbability, today.windSpeed),
+		format!("{}: {} High {}F. Low {}F. Humidity {}%. Percipitation chance {}%. Winds to {}mph.", tomorrow_d, tomorrow.summary, tomorrow.temperatureHigh, tomorrow.temperatureLow, tomorrow.humidity, tomorrow.precipProbability, tomorrow.windSpeed),
+		format!("{}: {} High {}F. Low {}F. Humidity {}%. Percipitation chance {}%. Winds to {}mph.", dayafter_d, dayafter.summary, dayafter.temperatureHigh, dayafter.temperatureLow, dayafter.humidity, dayafter.precipProbability, dayafter.windSpeed));
+	cache_push(&location, &forecast_text);
+	return forecast_text;
 }
 
 fn fix_location(location: &String) -> String {
@@ -2176,7 +2234,7 @@ fn fix_location(location: &String) -> String {
 		let statebytes = state.clone().to_string().into_bytes();
 		let enccity = easy.url_encode(&citybytes[..]);
 		let encstate = easy.url_encode(&statebytes[..]);
-		let citystate = format!("{}/{}", encstate.trim_left_matches(",").trim(), enccity.trim()).to_string();
+		let citystate = format!("{}/{}", encstate.trim_start_matches(",").trim(), enccity.trim()).to_string();
 		return citystate;
 	}
 	else {
@@ -2197,7 +2255,7 @@ fn hostmask_add(server: &IrcServer, chan: &String, table: &str, hostmask: &Strin
 	
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return false;
 		},
 		Ok(conn) => {
@@ -2216,7 +2274,7 @@ fn hostmask_add(server: &IrcServer, chan: &String, table: &str, hostmask: &Strin
 fn is_admin(nick: &String) -> bool {
 	match BOTCONFIG.lock() {
 		Err(err) => {
-			println!("Could not lock BOTCONFIG: {:?}", err);
+			println!("Could not lock BOTCONFIG: {:#?}", err);
 			false
 		},
 		Ok(botconfig) => {
@@ -2237,7 +2295,7 @@ fn is_bot(server: &IrcServer, chan: &String, hostmask: &String) -> bool {
 	}
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return false;
 		},
 		Ok(conn) => {
@@ -2266,7 +2324,7 @@ fn is_abuser(server: &IrcServer, chan: &String, hostmask: &String) -> bool {
 	}
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return false;
 		},
 		Ok(conn) => {
@@ -2341,7 +2399,7 @@ fn sub_get_title(page: &String) -> String {
 	let mut title = "".to_string();
 	match TITLERES.lock() {
 		Err(err) => {
-			println!("Could not lock TITLERES: {:?}", err);
+			println!("Could not lock TITLERES: {:#?}", err);
 			return "".to_string();
 		},
 		Ok(titleres) => {
@@ -2365,7 +2423,7 @@ fn sub_get_description(page: &String) -> String {
 	let mut desc = "".to_string();
 	match DESCRES.lock() {
 		Err(err) => {
-			println!("Could not lock DESCRES: {:?}", err);
+			println!("Could not lock DESCRES: {:#?}", err);
 			return "".to_string();
 		},
 		Ok(descres) => {
@@ -2435,7 +2493,7 @@ fn sub_get_cookie() -> String {
 	let mut cookie = "".to_string();
 	match BOTSTATE.lock() {
 		Err(err) => {
-			println!("Could not lock BOTSTATE: {:?}", err);
+			println!("Could not lock BOTSTATE: {:#?}", err);
 			return "".to_string();
 		},
 		Ok(mut botstate) => {
@@ -2445,7 +2503,7 @@ fn sub_get_cookie() -> String {
 			let url: String;
 			match BOTCONFIG.lock() {
 				Err(err) => {
-					println!("Could not lock CONN: {:?}", err);
+					println!("Could not lock CONN: {:#?}", err);
 					return "".to_string();
 				},
 				Ok(botconfig) => {
@@ -2491,7 +2549,7 @@ fn sub_get_cookie() -> String {
 fn load_titleres() {
 	let titleresf = OpenOptions::new().read(true).write(true).create(true).open("/home/bob/etc/snbot/titleres.txt");
 	if titleresf.is_err() {
-		println!("Error opening titleres.txt: {:?}", titleresf);
+		println!("Error opening titleres.txt: {:#?}", titleresf);
 		return;
 	}
 	let unwrapped = &titleresf.unwrap();
@@ -2499,7 +2557,7 @@ fn load_titleres() {
 
 	match TITLERES.lock() {
 		Err(err) => {
-			println!("Could not lock TITLERES: {:?}", err);
+			println!("Could not lock TITLERES: {:#?}", err);
 			return;
 		},
 		Ok(mut titleres) => {
@@ -2516,7 +2574,7 @@ fn load_titleres() {
 fn load_descres() {
 	let descresf = OpenOptions::new().read(true).write(true).create(true).open("/home/bob/etc/snbot/descres.txt");
 	if descresf.is_err() {
-		println!("Error opening descres.txt: {:?}", descresf);
+		println!("Error opening descres.txt: {:#?}", descresf);
 		return;
 	}
 	let damnit = &descresf.unwrap();
@@ -2524,7 +2582,7 @@ fn load_descres() {
 
 	match DESCRES.lock() {
 		Err(err) => {
-			println!("Could not lock DESCRES: {:?}", err);
+			println!("Could not lock DESCRES: {:#?}", err);
 			return;
 		},
 		Ok(mut descres) => {
@@ -2624,7 +2682,7 @@ fn get_bing_token() -> String {
 	let secretbytes;
 	match BOTCONFIG.lock() {
 		Err(err) => {
-			println!("Could not lock BOTCONFIG: {:?}", err);
+			println!("Could not lock BOTCONFIG: {:#?}", err);
 			return "".to_string();
 		},
 		Ok(botconfig) => {
@@ -2685,9 +2743,8 @@ fn is_nick_here(server: &IrcServer, chan: &String, nick: &String) -> bool {
 }
 
 fn is_nick_registered(server: &IrcServer, whorx: &Receiver<NSResponse>, nick: &String) -> bool{
-	//let cmd = format!("WHO {} %na", &nick);
 	match BOTSTATE.lock() {
-		Err(err) => println!("Error locking BOTSTATE: {:?}", err),
+		Err(err) => println!("Error locking BOTSTATE: {:#?}", err),
 		Ok(mut botstate) => {
 			while botstate.ns_waiting == true {
 				thread::sleep(Duration::new(1,0));
@@ -2697,9 +2754,20 @@ fn is_nick_registered(server: &IrcServer, whorx: &Receiver<NSResponse>, nick: &S
 	};
 	do_who(&server, &nick.as_str());
 	let returnme;
+	let tenthSecond = Duration::from_millis(100);
+	let mut tenths = 0;
+
 	loop {
 		match whorx.try_recv() {
-			Err(_) => { },
+			Err(_) => {
+				if tenths >= 10 {
+					returnme = false;
+					println!("Did not get a ns response in under a second");
+					break;
+				}
+				thread::sleep(tenthSecond);
+				tenths += 1;
+			},
 			Ok(nsresponse) => {
 				if &nsresponse.nsname[..] == "0" {
 					returnme = false; 
@@ -2707,13 +2775,12 @@ fn is_nick_registered(server: &IrcServer, whorx: &Receiver<NSResponse>, nick: &S
 				else {
 					returnme = true;
 				}
-				println!("from is_nick_registered: {:?}", &nsresponse);
 				break;
 			},
 		};
 	}
 	match BOTSTATE.lock() {
-		Err(err) => println!("Error locking BOTSTATE: {:?}", err),
+		Err(err) => println!("Error locking BOTSTATE: {:#?}", err),
 		Ok(mut botstate) =>	botstate.ns_waiting = false,
 	};
 	return returnme;
@@ -2774,7 +2841,7 @@ fn handle_timer(server: &IrcServer, feedbacktx: &Sender<Timer>, timer: &TimerTyp
 fn get_recurring_timers() -> Vec<TimerTypes> {
 	let mut recurringTimers: Vec<TimerTypes> = Vec::new();
 	match CONN.lock() {
-		Err(err) => println!("Could not lock CONN: {:?}", err),
+		Err(err) => println!("Could not lock CONN: {:#?}", err),
 		Ok(conn) => {
 			let mut stmt = conn.prepare("SELECT * FROM recurring_timers").unwrap();
 			let allrows = stmt.query_map(&[], |row| {
@@ -3113,7 +3180,7 @@ fn save_character(character: &Character) {
 	let hp = character.hp as i64;
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -3145,7 +3212,7 @@ fn roll_dmg() -> u64 {
 fn character_exists(nick: &String) -> bool {
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return false;
 		},
 		Ok(conn) => {
@@ -3166,7 +3233,7 @@ fn create_character(nick: &String) {
 	let time: i64 = time::now_utc().to_timespec().sec;
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -3188,7 +3255,7 @@ fn is_alive(character: &Character) -> bool {
 fn get_character(nick: &String) -> Character {
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return Character {
 				nick: "".to_string(),
 				level: 0,
@@ -3235,7 +3302,7 @@ fn fitectl_scoreboard(server: &IrcServer, quiet: bool) {
 
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -3303,7 +3370,7 @@ fn fitectl_status(server: &IrcServer, chan: &String, nick: &String) {
 	}
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -3337,7 +3404,7 @@ fn fitectl_weapon(server: &IrcServer, chan: &String, nick: &String, weapon: Stri
 	}
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -3362,7 +3429,7 @@ fn fitectl_armor(server: &IrcServer, chan: &String, nick: &String, armor: String
 	}
 	match CONN.lock() {
 		Err(err) => {
-			println!("Could not lock CONN: {:?}", err);
+			println!("Could not lock CONN: {:#?}", err);
 			return;
 		},
 		Ok(conn) => {
@@ -3372,4 +3439,40 @@ fn fitectl_armor(server: &IrcServer, chan: &String, nick: &String, armor: String
 		},
 	};
 	return;
+}
+
+fn is_nick_fiter(nick: &String) -> bool {
+	match CONN.lock() {
+		Err(err) => {
+			println!("Could not lock CONN: {:#?}", err);
+			return false;
+		},
+		Ok(conn) =>{
+			struct Row {
+				count: i64,
+			};
+			let result: Row = conn.query_row("SELECT count(nick) FROM characters WHERE nick = ?", &[&nick.as_str()], |row| {
+				Row {
+					count: row.get(0)
+				}
+			}).unwrap();
+			if result.count == 0 {
+				return false;
+			}
+			return true;
+		}
+	}
+}
+
+fn register_fiter(nick: &String) -> Result<(), String> {
+	match CONN.lock() {
+		Err(err) => {
+			let rerr = format!("{:#?}", &err);
+			return Err(rerr);
+		},
+		Ok(conn) => {
+			// FIX
+			return Ok(());
+		},
+	};
 }
