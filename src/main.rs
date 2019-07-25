@@ -1,6 +1,4 @@
 #![allow(non_snake_case)]
-#![feature(alloc_system)]
-extern crate alloc_system;
 extern crate curl;
 extern crate irc;
 extern crate rusqlite;
