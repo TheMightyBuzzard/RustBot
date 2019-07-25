@@ -3223,7 +3223,7 @@ fn save_character(character: &Character) {
 	let time: i64 = time::now_utc().to_timespec().sec;
 	let level = character.level as i64;
 	let hp = character.hp as i64;
-	if &character.nick.len() > 3 && &character.nick.as_str()[..4] == "NPC_" {
+	if &character.nick.len() > &3 && &character.nick.as_str()[..4] == "NPC_" {
 		return;
 	}
 	match CONN.lock() {
@@ -3279,7 +3279,7 @@ fn character_exists(nick: &String) -> bool {
 
 fn create_character(nick: &String) {
 	let time: i64 = time::now_utc().to_timespec().sec;
-	if &nick.len() > 3 && &nick[..4] == "NPC_" {
+	if &nick.len() > &3 && &nick[..4] == "NPC_" {
 		return;
 	}
 	match CONN.lock() {
@@ -3305,7 +3305,7 @@ fn is_alive(character: &Character) -> bool {
 
 fn get_character(nick: &String) -> Character {
 	// return a fake character if &nick[..4] == "NPC_"
-	if &nick.len() > 3 && &nick[..4] == "NPC_" {
+	if &nick.len() > &3 && &nick[..4] == "NPC_" {
 		return Character {
 			nick: nick.clone(),
 			level: 1,
