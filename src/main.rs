@@ -2216,12 +2216,10 @@ fn get_weather(location: String) -> String {
 	}
 
 	// gotta get the lat/long for location for the forecast crate
-	println!("{}", &ockey);
 	let oc = Opencage::new(ockey);
 	let ocres: Vec<Point<f32>> = oc.forward(&location.as_str()).unwrap();
 	let lat: f32 = ocres[0].y();
-	let lng: f32 = ocres[1].x();
-	//let lng: f32 = ocres.results[0].geometry.get("lng").unwrap();
+	let lng: f32 = ocres[0].x();
 
 	// now get the weather for lat/lng
 	let mut badblocks = vec![forecast::ExcludeBlock::Currently, forecast::ExcludeBlock::Minutely, forecast::ExcludeBlock::Hourly];
@@ -2237,10 +2235,11 @@ fn get_weather(location: String) -> String {
 	let dayafter_d = Local.timestamp(dayafter.time, 0).with_timezone(&FixedOffset::east_opt(fc_r.offset * 3600).unwrap()).format("%a %b %d");
 	
 	// pretty it up for return and cache the results
-	let forecast_text = format!("{} {} {}",
-		format!("{}: {} High {}F. Low {}F. Humidity {}%. Percipitation chance {}%. Winds to {}mph.", today_d, today.summary, today.temperatureHigh, today.temperatureLow, today.humidity, today.precipProbability, today.windSpeed),
-		format!("{}: {} High {}F. Low {}F. Humidity {}%. Percipitation chance {}%. Winds to {}mph.", tomorrow_d, tomorrow.summary, tomorrow.temperatureHigh, tomorrow.temperatureLow, tomorrow.humidity, tomorrow.precipProbability, tomorrow.windSpeed),
-		format!("{}: {} High {}F. Low {}F. Humidity {}%. Percipitation chance {}%. Winds to {}mph.", dayafter_d, dayafter.summary, dayafter.temperatureHigh, dayafter.temperatureLow, dayafter.humidity, dayafter.precipProbability, dayafter.windSpeed));
+	let forecast_text = format!("{} - {} {} {}",
+		format!("{}", &location),
+		format!("{}: {} High {}F. Low {}F. Humidity {}%. Precipitation chance {}%. Winds to {}mph.", today_d, today.summary, today.temperatureHigh, today.temperatureLow, today.humidity, today.precipProbability, today.windSpeed),
+		format!("{}: {} High {}F. Low {}F. Humidity {}%. Precipitation chance {}%. Winds to {}mph.", tomorrow_d, tomorrow.summary, tomorrow.temperatureHigh, tomorrow.temperatureLow, tomorrow.humidity, tomorrow.precipProbability, tomorrow.windSpeed),
+		format!("{}: {} High {}F. Low {}F. Humidity {}%. Precipitation chance {}%. Winds to {}mph.", dayafter_d, dayafter.summary, dayafter.temperatureHigh, dayafter.temperatureLow, dayafter.humidity, dayafter.precipProbability, dayafter.windSpeed));
 	cache_push(&location, &forecast_text);
 	return forecast_text;
 }
