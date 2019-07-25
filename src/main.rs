@@ -2219,12 +2219,10 @@ fn get_weather(location: String) -> String {
 	// gotta get the lat/long for location for the forecast crate
 	println!("{}", &ockey);
 	let oc = Opencage::new(ockey);
-	let ocres: Result<Vec<Point<f64>>, _> = oc.forward(&location.as_str());
-	println!("{:#?}", ocres);
-	return "foo".to_string();
-	/*
-	let lat: f32 = *ocres.results[0].geometry.get("lat").unwrap();
-	let lng: f32 = *ocres.results[0].geometry.get("lng").unwrap();
+	let ocres: Vec<Point<f32>> = oc.forward(&location.as_str()).unwrap();
+	let lat: f32 = ocres[0].y();
+	let lng: f32 = 64.1f32;
+	//let lng: f32 = ocres.results[0].geometry.get("lng").unwrap();
 
 	// now get the weather for lat/lng
 	let mut badblocks = vec![forecast::ExcludeBlock::Currently, forecast::ExcludeBlock::Minutely, forecast::ExcludeBlock::Hourly];
@@ -2246,7 +2244,6 @@ fn get_weather(location: String) -> String {
 		format!("{}: {} High {}F. Low {}F. Humidity {}%. Percipitation chance {}%. Winds to {}mph.", dayafter_d, dayafter.summary, dayafter.temperatureHigh, dayafter.temperatureLow, dayafter.humidity, dayafter.precipProbability, dayafter.windSpeed));
 	cache_push(&location, &forecast_text);
 	return forecast_text;
-	*/
 }
 
 fn fix_location(location: &String) -> String {
