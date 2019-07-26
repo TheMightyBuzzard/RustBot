@@ -196,7 +196,6 @@ struct DayOfWeather {
 	time: i64,
 	summary: String,
 	precipProbability: f32,
-	precipType: String,
 	temperatureHigh: f32,
 	temperatureLow: f32,
 	humidity: f32,
@@ -2226,7 +2225,17 @@ fn get_weather(location: String) -> String {
 	let reqw_client = reqwest::Client::new();
 	let api_client = forecast::ApiClient::new(&reqw_client);
 	let forecast_request = forecast::ForecastRequestBuilder::new(dwkey.as_str(), lat.into(), lng.into()).exclude_blocks(&mut badblocks).lang(forecast::Lang::English).units(forecast::Units::Imperial).build();
-	let fc_r: WeatherJSON = api_client.get_forecast(forecast_request).unwrap().json().unwrap();
+	let fc_res = api_client.get_forecast(forecast_request);
+	if fc_res.is_err() {
+		println!("erra:\n{:#?}", &fc_res);
+		return format!("Could not get weather for {}", &location);
+	}
+	let fc_resb = fc_res.unwrap().json();
+	if fc_resb.is_err() {
+		println!("errb:\n{:#?}", &fc_resb);
+		return format!("Could not get weather for {}", &location);
+	}
+	let fc_r: WeatherJSON = fc_resb.unwrap();
 	let today = &fc_r.daily.data[0];
 	let today_d = Local.timestamp(today.time, 0).with_timezone(&FixedOffset::east_opt(fc_r.offset * 3600).unwrap()).format("%a %b %d");
 	let tomorrow = &fc_r.daily.data[1];
