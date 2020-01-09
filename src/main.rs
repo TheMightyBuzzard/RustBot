@@ -31,7 +31,7 @@ use serde_json::{Value};
 use rustc_serialize::json::Json;
 use rusqlite::Connection;
 use rand::Rng;
-use geocoding::{Opencage, Forward, Point};
+use geocoding::{Opencage, Forward, Point, Reverse};
 use chrono::{TimeZone, FixedOffset, Local};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -225,7 +225,7 @@ const VERSION: &str = "0.2.3";
 const SOURCE: &str = "https://github.com/TheMightyBuzzard/RustBot";
 const DEBUG: bool = false;
 const ARMOR_CLASS: u8 = 10;
-const MAX_DL_SIZE: f64 = 1048576f64;
+const MAX_DL_SIZE: f64 = 104857600f64;
 
 lazy_static! {
 	static ref BOTCONFIG: Arc<Mutex<BotConfig>> = Arc::new(Mutex::new(BotConfig::new()));
@@ -835,7 +835,7 @@ fn process_command(server: &IrcServer, subtx: &Sender<Submission>, timertx: &Sen
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "bnk", true) {
-		let _ = server.send_privmsg(&chan, "https://www.youtube.com/watch?v=9upTLWRZTfw");
+		let _ = server.send_privmsg(&chan, "https://www.youtube.com/watch?v=pF_YEFJpHX8");
 		return;
 	}
 	else if cmd_check(&noprefixbytes, "part", true) || cmd_check(&noprefixbytes, "part ", false) {
@@ -2217,38 +2217,82 @@ fn get_weather(location: String) -> String {
 	// gotta get the lat/long for location for the forecast crate
 	let oc = Opencage::new(ockey);
 	let ocres: Vec<Point<f32>> = oc.forward(&location.as_str()).unwrap();
+	if ocres.len() == 0 {
+		return format!("Could not get geo coordinates for '{}'.", &location.as_str());
+	}
 	let lat: f32 = ocres[0].y();
 	let lng: f32 = ocres[0].x();
+	let ocresb = oc.reverse(&Point::new(lng, lat));
+	let checkedloc: String;
+	if ocresb.is_err() {
+		checkedloc = location.clone();
+	} else {
+		checkedloc = ocresb.unwrap();
+	}
 
 	// now get the weather for lat/lng
-	let mut badblocks = vec![forecast::ExcludeBlock::Currently, forecast::ExcludeBlock::Minutely, forecast::ExcludeBlock::Hourly];
-	let reqw_client = reqwest::Client::new();
-	let api_client = forecast::ApiClient::new(&reqw_client);
-	let forecast_request = forecast::ForecastRequestBuilder::new(dwkey.as_str(), lat.into(), lng.into()).exclude_blocks(&mut badblocks).lang(forecast::Lang::English).units(forecast::Units::Imperial).build();
-	let fc_res = api_client.get_forecast(forecast_request);
-	if fc_res.is_err() {
-		println!("erra:\n{:#?}", &fc_res);
+	let mut dst = Vec::new();
+	let mut easy = Easy::new();
+	let url = format!("https://api.darksky.net/forecast/{}/{},{}?exclude=currently%2Cminutely%2Chourly&lang=en&units=us", dwkey, lat, lng);
+	easy.url(url.as_str()).unwrap();
+	easy.forbid_reuse(true).unwrap();
+	easy.progress(true).unwrap();
+	{
+		let transfer = easy.transfer();
+		body_only(transfer, &mut dst);
+	}
+	if easy.response_code().unwrap_or(999) != 200 {
+		println!("got http response code {} in command_google", easy.response_code().unwrap_or(999));
+		return format!("Unable to get weather for {}", &location);
+	}
+
+	let json = str::from_utf8(&dst[..]).unwrap_or("");
+	let jsonthing = Json::from_str(json).unwrap_or(Json::from_str("{}").unwrap());
+	let found = jsonthing.find_path(&[&"daily", &"data"]);
+	if found.is_none() {
+		println!("buggy json: {:#?}", &jsonthing);
 		return format!("Could not get weather for {}", &location);
 	}
-	let fc_resb = fc_res.unwrap().json();
-	if fc_resb.is_err() {
-		println!("errb:\n{:#?}", &fc_resb);
-		return format!("Could not get weather for {}", &location);
-	}
-	let fc_r: WeatherJSON = fc_resb.unwrap();
-	let today = &fc_r.daily.data[0];
-	let today_d = Local.timestamp(today.time, 0).with_timezone(&FixedOffset::east_opt(fc_r.offset * 3600).unwrap()).format("%a %b %d");
-	let tomorrow = &fc_r.daily.data[1];
-	let tomorrow_d = Local.timestamp(tomorrow.time, 0).with_timezone(&FixedOffset::east_opt(fc_r.offset * 3600).unwrap()).format("%a %b %d");
-	let dayafter = &fc_r.daily.data[2];
-	let dayafter_d = Local.timestamp(dayafter.time, 0).with_timezone(&FixedOffset::east_opt(fc_r.offset * 3600).unwrap()).format("%a %b %d");
-	
-	// pretty it up for return and cache the results
+	let days = found.unwrap();
+	let offset: i32 = jsonthing.find("offset").unwrap().as_i64().unwrap() as i32;
+
+
+	let tomorrow = &days[1];
+	let dayafter = &days[2];
+	let prezero = Json::from_str("{\"zero\":\"0\"}").unwrap();
+	let zero = prezero.find("zero").unwrap();
+	let tomorrow_d: String = format!("{}", Local.timestamp(tomorrow.find("time").unwrap_or(&zero).as_i64().unwrap(), 0).with_timezone(&FixedOffset::east_opt(offset * 3600i32).unwrap()).format("%a %b %d"));
+	let dayafter_d: String = format!("{}", Local.timestamp(dayafter.find("time").unwrap_or(&zero).as_i64().unwrap(), 0).with_timezone(&FixedOffset::east_opt(offset * 3600i32).unwrap()).format("%a %b %d"));
 	let forecast_text = format!("{} - {} {} {}",
-		format!("{}", &location),
-		format!("{}: {} High {}F. Low {}F. Humidity {}%. Precipitation chance {}%. Winds to {}mph.", today_d, today.summary, today.temperatureHigh, today.temperatureLow, today.humidity, today.precipProbability, today.windSpeed),
-		format!("{}: {} High {}F. Low {}F. Humidity {}%. Precipitation chance {}%. Winds to {}mph.", tomorrow_d, tomorrow.summary, tomorrow.temperatureHigh, tomorrow.temperatureLow, tomorrow.humidity, tomorrow.precipProbability, tomorrow.windSpeed),
-		format!("{}: {} High {}F. Low {}F. Humidity {}%. Precipitation chance {}%. Winds to {}mph.", dayafter_d, dayafter.summary, dayafter.temperatureHigh, dayafter.temperatureLow, dayafter.humidity, dayafter.precipProbability, dayafter.windSpeed));
+		format!("{}", &checkedloc),
+		format!("Today: {} {}/{}F, Humidity: {}%, Precip: {}%, Wind ~{}mph.",
+			days[0].find("summary").unwrap_or(&zero).to_string().trim(),
+			days[0].find("temperatureHigh").unwrap_or(&zero).as_f64().unwrap() as i64,
+			days[0].find("temperatureLow").unwrap_or(&zero).as_f64().unwrap() as i64,
+			(days[0].find("humidity").unwrap_or(&zero).as_f64().unwrap() * 100f64) as i64,
+			(days[0].find("precipProbability").unwrap_or(&zero).as_f64().unwrap() * 100f64) as i64,
+			days[0].find("windSpeed").unwrap_or(&zero).as_f64().unwrap() as i64
+		),
+		format!("{}: {} {}/{}F, Humidity: {}%, Precip: {}%, Wind ~{}mph.",
+			&tomorrow_d[..3],
+			days[1].find("summary").unwrap_or(&zero).to_string().trim(),
+			days[1].find("temperatureHigh").unwrap_or(&zero).as_f64().unwrap() as i64,
+			days[1].find("temperatureLow").unwrap_or(&zero).as_f64().unwrap() as i64,
+			(days[1].find("humidity").unwrap_or(&zero).as_f64().unwrap() * 100f64) as i64,
+			(days[1].find("precipProbability").unwrap_or(&zero).as_f64().unwrap() * 100f64) as i64,
+			days[1].find("windSpeed").unwrap_or(&zero).as_f64().unwrap() as i64
+		),
+		format!("{}: {} {}/{}F, Humidity: {}%, Precip: {}%, Wind ~{}mph.",
+			&dayafter_d[..3],
+			days[2].find("summary").unwrap_or(&zero).to_string().trim(),
+			days[2].find("temperatureHigh").unwrap_or(&zero).as_f64().unwrap() as i64,
+			days[2].find("temperatureLow").unwrap_or(&zero).as_f64().unwrap() as i64,
+			(days[2].find("humidity").unwrap_or(&zero).as_f64().unwrap() * 100f64) as i64,
+			(days[2].find("precipProbability").unwrap_or(&zero).as_f64().unwrap() * 100f64) as i64,
+			days[2].find("windSpeed").unwrap_or(&zero).as_f64().unwrap() as i64
+		)
+	);
+
 	cache_push(&location, &forecast_text);
 	return forecast_text;
 }
@@ -2674,7 +2718,7 @@ fn get_youtube(go_key: &String, query: &String) -> String {
 		return format!("Got bad response from youtube API");
 	}
 	let resopt = resopt.unwrap();
-	let cleanme = resopt[0].find_path(&["id", "videoId"]).unwrap().as_string().unwrap().to_string();
+	let cleanme = format!("{} -- {}", resopt[0].find_path(&["id", "videoId"]).unwrap().as_string().unwrap().to_string(), resopt[0].find_path(&["snippet", "title"]).unwrap().as_string().unwrap().to_string());
 	return cleanme;
 
 }
@@ -2987,17 +3031,17 @@ fn fite(server: &IrcServer, timertx: &Sender<Timer>, attacker: &String, target: 
 	let aarmor = format!("{}{}{}", &itallic, &rAttacker.armor, &clearall);
 	let darmor = format!("{}{}{}", &itallic, &rDefender.armor, &clearall);
 
-	let speeditup;
+	let speeditup: u64;
 	if rDefender.level > 49 && rAttacker.level > 49 {
 		if rDefender.level < rAttacker.level {
-			speeditup = (rDefender.level / 25) as u8;
+			speeditup = rDefender.level / 25;
 		}
 		else {
-			speeditup = (rAttacker.level / 25) as u8;
+			speeditup = rAttacker.level / 25;
 		}	
 	}
 	else {
-		speeditup = 1_u8;
+		speeditup = 1_u64;
 	}
 
 	// Do combat rounds until someone dies
