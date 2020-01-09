@@ -221,7 +221,33 @@ struct WeatherJSON {
 	offset: i32,
 }
 
-const VERSION: &str = "0.2.3";
+#[derive(Serialize, Deserialize, Debug)]
+struct FiteEffect {
+	id: &str,
+	PrettyName: String,
+	dmgbuffmod: u64,
+	dmgbuff: u64,
+	dmgdebuffmod: u64,
+	dmgdebuff: u64,
+	dotdmg: u64,
+	acbuff: u8,
+	acdebuff: u8,
+	hitbuff: u8,
+	hitdebuff: u8,
+	healmod: u64,
+	heal: u64,
+	bonusattacks: u8,
+	slowrounds: u8,
+	duration: u8,
+	summonid: &str,
+	summonmin: u8,
+	summonmax: u8,
+	issummon: bool,
+	starttext: &str,
+	stoptext: &str,
+}
+
+const VERSION: &str = "0.3.0";
 const SOURCE: &str = "https://github.com/TheMightyBuzzard/RustBot";
 const DEBUG: bool = false;
 const ARMOR_CLASS: u8 = 10;
@@ -234,6 +260,7 @@ lazy_static! {
 	static ref TITLERES: Arc<Mutex<Vec<Regex>>> = Arc::new(Mutex::new(vec![]));
 	static ref DESCRES: Arc<Mutex<Vec<Regex>>> = Arc::new(Mutex::new(vec![]));
 	static ref WUCACHE: Arc<Mutex<Vec<CacheEntry>>> = Arc::new(Mutex::new(vec![]));
+	static ref FITEEFFECTS: Arc<Mutex<Vec<FiteEffect>>> = Arc::new(Mutex::new(vec![]));
 }
 
 fn main() {
@@ -546,6 +573,19 @@ fn get_bot_config(botnick: &String) -> BotConfig {
 			exit(1);
 		},
 	};
+}
+
+fn get_fite_effects() -> Vec<FiteEffect> {
+	let effects_file = format!("/home/bob/etc/snbot/fiteeffects.json");
+	match File::open(&effects_file) {
+		Ok(file) => {
+			let alleffects: Vec<FiteEffect> = 
+		},
+		Err(err) => {
+			println!("Could not read from {}: {:#?}", &effects_file, err);
+			exit(1);
+		}
+	}
 }
 
 fn is_action(said: &String) -> bool {
@@ -2690,6 +2730,29 @@ fn load_descres() {
 			}
 		},
 	};
+}
+
+fn load_fiteeffects() {
+	let mut infileres = OpenOptions::new().read(true).write(true).create(true).open("/home/bob/etc/snbot/fiteeffects.txt");
+	if infileres.is_err() {
+		println!("problem opening fiteeffects.txt: {:#?}", &outfileres.err());
+		return;
+	}
+	let mut infile = infileres.unwrap();
+	let mut out: Vec<FiteEffect>;
+	match FITEEFFECTS.lock() {
+		Err(err) => {
+			println!("Could not lock FITEEFFECTS: {:#?}", err);
+			return;
+		},
+		Ok(mut effects) => {
+			effects.clear();
+			outres = serde_json::from_reader(&infile);
+			if outres.is_err() {
+				println!("error reading from fiteeffects.txt: {:#?}", &outres);
+				return;
+			}
+			effects = outres.unwrap();
 }
 
 fn get_youtube(go_key: &String, query: &String) -> String {
